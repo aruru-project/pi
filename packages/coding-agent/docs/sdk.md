@@ -515,6 +515,41 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 > See [examples/sdk/03-custom-prompt.ts](../examples/sdk/03-custom-prompt.ts)
 
+#### Editable default prose (Dock-derived SDK)
+
+`systemPromptOverride` supplies a native custom prompt: a nonempty result replaces the default path, including its generated tool summary, guidelines and Pi documentation. To edit the default prose while retaining Pi's dynamic assembly, use an explicit `systemPromptResolver` instead:
+
+```typescript
+import { readFile } from "node:fs/promises";
+import {
+  DefaultResourceLoader,
+  getDefaultSystemPromptBody,
+  parseDefaultSystemPromptBody,
+} from "@earendil-works/pi-coding-agent";
+
+// Use this independent object as the initial contents of an application-owned JSON file.
+const initialBody = getDefaultSystemPromptBody();
+const bodyPath = "/absolute/path/to/system.json";
+const loader = new DefaultResourceLoader({
+  cwd,
+  agentDir,
+  systemPromptResolver: async () => ({
+    kind: "default",
+    body: parseDefaultSystemPromptBody(JSON.parse(await readFile(bodyPath, "utf8"))),
+    source: { path: bodyPath },
+  }),
+});
+await loader.reload();
+```
+
+`DefaultSystemPromptBody` contains `intro`, `toolNotes`, `documentationHeading` strings and `guidelines`, `documentationInstructions` string arrays. Every field is required; empty strings and arrays are intentional, not requests for fallback text. There are no placeholders or template syntax. `getDefaultSystemPromptBody()` returns the exact v0.85.1 base prose, not a frozen final prompt.
+
+Pi still generates active-tool summaries, tool-related guidelines, documentation paths, APPEND_SYSTEM, context files, eligible skills and cwd. Tool changes rebuild those sections using the already loaded body; they do not read the file again. The resolver runs on resource reload, so applications retaining a choice should close over that source rather than rediscover a directory default.
+
+A resolver is authoritative over `systemPrompt`, discovered SYSTEM.md and `systemPromptOverride`. It must read and return the chosen contents, not a path as text. Read/parse failures propagate; Pi does not silently choose another source. Body and source are updated together after successful resolution. `getSystemPrompt()` returns `undefined` for a default-body selection, `getDefaultSystemPromptBody()` returns its loaded body, and `getSystemPromptSource()` returns its declared source. Source is optional for in-memory choices.
+
+To select a native SYSTEM.md explicitly, return `{ kind: "custom", text: await readFile(path, "utf8"), source: { path } }`. This retains native custom-prompt semantics, including the existing empty-string behavior. Without a resolver, all native discovery and override behavior is unchanged. Custom `ResourceLoader` implementations may optionally implement `getDefaultSystemPromptBody()`; existing implementations need no changes. The loaded body also appears in `BuildSystemPromptOptions.defaultSystemPromptBody`, including extension prompt options.
+
 ### Tools
 
 Specify which built-in tools to enable:

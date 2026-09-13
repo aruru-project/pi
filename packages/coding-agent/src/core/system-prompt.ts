@@ -5,7 +5,65 @@
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
+/** Editable prose in the default prompt; dynamic tool and resource sections remain Pi-owned. */
+export interface DefaultSystemPromptBody {
+	intro: string;
+	toolNotes: string;
+	guidelines: string[];
+	documentationHeading: string;
+	documentationInstructions: string[];
+}
+
+/** Return an independent copy of the v0.85.1 default prose, not an assembled session prompt. */
+export function getDefaultSystemPromptBody(): DefaultSystemPromptBody {
+	return {
+		intro: "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
+		toolNotes: "In addition to the tools above, you may have access to other custom tools depending on the project.",
+		guidelines: ["Be concise in your responses", "Show file paths clearly when working with files"],
+		documentationHeading:
+			"Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):",
+		documentationInstructions: [
+			"When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
+			"When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)",
+			"When working on pi topics, read the docs and examples, and follow .md cross-references before implementing",
+			"Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)",
+		],
+	};
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+/** Validate a complete body (for example parsed JSON), without filling missing fields. */
+export function parseDefaultSystemPromptBody(value: unknown): DefaultSystemPromptBody {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new TypeError("Default system prompt body must be an object");
+	}
+	const body = value as Record<string, unknown>;
+	if (
+		typeof body.intro !== "string" ||
+		typeof body.toolNotes !== "string" ||
+		!isStringArray(body.guidelines) ||
+		typeof body.documentationHeading !== "string" ||
+		!isStringArray(body.documentationInstructions)
+	) {
+		throw new TypeError(
+			"Default system prompt body requires intro, toolNotes, documentationHeading strings and guidelines, documentationInstructions string arrays",
+		);
+	}
+	return {
+		intro: body.intro,
+		toolNotes: body.toolNotes,
+		guidelines: [...body.guidelines],
+		documentationHeading: body.documentationHeading,
+		documentationInstructions: [...body.documentationInstructions],
+	};
+}
+
 export interface BuildSystemPromptOptions {
+	/** Editable default prose. Does not change native customPrompt semantics. */
+	defaultSystemPromptBody?: DefaultSystemPromptBody;
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
 	/** Tools to include in prompt. Default: [read, bash, edit, write] */
@@ -118,30 +176,27 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		}
 	}
 
-	// Always include these
-	addGuideline("Be concise in your responses");
-	addGuideline("Show file paths clearly when working with files");
+	const body = options.defaultSystemPromptBody ?? getDefaultSystemPromptBody();
+	for (const guideline of body.guidelines) {
+		addGuideline(guideline);
+	}
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+	let prompt = `${body.intro}
 
 Available tools:
 ${toolsList}
 
-In addition to the tools above, you may have access to other custom tools depending on the project.
+${body.toolNotes}
 
 Guidelines:
 ${guidelines}
 
-Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
+${body.documentationHeading}
 - Main documentation: ${readmePath}
 - Additional docs: ${docsPath}
-- Examples: ${examplesPath} (extensions, custom tools, SDK)
-- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
-- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)
-- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
-- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
+- Examples: ${examplesPath} (extensions, custom tools, SDK)${body.documentationInstructions.map((instruction) => `\n- ${instruction}`).join("")}`;
 
 	if (appendSection) {
 		prompt += appendSection;
