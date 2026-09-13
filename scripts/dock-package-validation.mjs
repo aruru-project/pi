@@ -18,7 +18,11 @@ export function isolatedEnvironment(home) {
 		TMPDIR: home, TMP: home, TEMP: home, PI_CODING_AGENT_DIR: join(home, "agent"), PI_OFFLINE: "1", PI_TELEMETRY: "0",
 		npm_config_cache: join(home, "npm-cache"), npm_config_userconfig: join(home, "npmrc"),
 		npm_config_globalconfig: join(home, "global-npmrc") };
-	for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "ComSpec", "PATHEXT"]) if (process.env[key]) env[key] = process.env[key];
+	// Public asset downloads still need the caller's network route, not its model credentials.
+	for (const key of ["SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "ComSpec", "PATHEXT",
+		"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"]) {
+		if (process.env[key]) env[key] = process.env[key];
+	}
 	return env;
 }
 
@@ -99,7 +103,12 @@ export function inspectInstalledCohort({ consumer, provenance, artifacts, locked
 			assert.equal(record.resolved, resolvedFor(artifact), path);
 		} else {
 			assert.ok(!packageName.startsWith("@earendil-works/"), path);
-			assert.ok(Object.entries(lockedPackages).some(([lockedPath, locked]) =>
+			assert.ok(typeof record.version === "string" && record.version.length > 0, `Dependency version is not recorded: ${path}`);
+			assert.ok(typeof record.resolved === "string" && record.resolved.startsWith("https://"), `Dependency source is not recorded: ${path}`);
+			assert.ok(typeof record.integrity === "string" && record.integrity.length > 0, `Dependency integrity is not recorded: ${path}`);
+			// The producer's local smoke uses its build lock. A normal consumer owns
+			// its newly resolved lock; the subsequent npm ci must reproduce that tree.
+			if (lockedPackages) assert.ok(Object.entries(lockedPackages).some(([lockedPath, locked]) =>
 				lockedPath.split("node_modules/").at(-1) === packageName && locked.version === record.version &&
 				locked.resolved === record.resolved && locked.integrity === record.integrity), `Non-Pi dependency left engine lock: ${path}`);
 		}
