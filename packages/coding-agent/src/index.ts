@@ -18,6 +18,7 @@ export {
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
 	type ModelCycleResult,
+	type ModelSelectionOptions,
 	type ParsedSkillBlock,
 	type PromptOptions,
 	parseSkillBlock,
