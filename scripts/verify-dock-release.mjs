@@ -105,12 +105,20 @@ for (const command of ["install", "ci"]) {
 			assert.equal(record.integrity, artifact.integrity, path);
 		}
 	}
-	const installedPackages = inspectInstalledCohort({ consumer, provenance, artifacts, lockedPackages: shrinkwrap.packages, resolvedFor: (artifact) => artifact.url });
+	const installedPackages = inspectInstalledCohort({ consumer, provenance, artifacts, resolvedFor: (artifact) => artifact.url });
 	inspectCohortResolutions({ consumer, installedPackages, artifacts, runtimeRoots: provenance.runtimeRoots, env });
 	const imports = run(process.execPath, [probe]);
-	const lockSha256 = createHash("sha256").update(readFileSync(join(consumer, "package-lock.json"))).digest("hex");
+	const lockBytes = readFileSync(join(consumer, "package-lock.json"));
+	const lockSha256 = createHash("sha256").update(lockBytes).digest("hex");
 	if (phases.length) assert.equal(lockSha256, phases[0].lockSha256, "npm ci changed the generated lock");
-	phases.push({ command, lockSha256, installedPackages, imports });
+	const thirdPartyDifferencesFromBuild = Object.entries(JSON.parse(lockBytes).packages).flatMap(([path, record]) => {
+		if (!path || artifacts.has(path.split("node_modules/").at(-1))) return [];
+		const name = path.split("node_modules/").at(-1);
+		const buildRecords = Object.entries(shrinkwrap.packages).filter(([p]) => p.split("node_modules/").at(-1) === name).map(([, value]) => value);
+		return buildRecords.some((value) => value.version === record.version && value.resolved === record.resolved && value.integrity === record.integrity)
+			? [] : [{ path, version: record.version, buildVersions: [...new Set(buildRecords.map((value) => value.version))] }];
+	});
+	phases.push({ command, lockSha256, installedPackages, imports, thirdPartyDifferencesFromBuild });
 }
 const receipt = { manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"), version: provenance.version, node: process.version, npm: run("npm", ["--version"]), phases };
 writeFileSync(join(out, "verification.json"), `${JSON.stringify(receipt, null, 2)}\n`);
