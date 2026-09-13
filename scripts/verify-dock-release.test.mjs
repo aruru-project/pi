@@ -86,6 +86,23 @@ test("shared cohort check detects provenance, SRI, URL, non-Pi lock drift and du
 	assert.throws(check, /resolves outside consumer/);
 });
 
+test("normal consumers record their third-party resolution instead of copying the producer build tree", (t) => {
+	const consumer = temporary(t);
+	const directory = join(consumer, "node_modules", "ordinary-lib");
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "ordinary-lib", version: "2.0.0" }));
+	const record = { version: "2.0.0", resolved: "https://registry.npmjs.org/ordinary-lib/-/ordinary-lib-2.0.0.tgz", integrity: "sha512-fixture" };
+	const lock = { packages: { "": {}, "node_modules/ordinary-lib": record } };
+	const save = () => writeFileSync(join(consumer, "package-lock.json"), JSON.stringify(lock));
+	save();
+	const options = { consumer, provenance: {}, artifacts: new Map(), resolvedFor: () => "unused" };
+	assert.deepEqual(inspectInstalledCohort(options), []);
+	assert.throws(() => inspectInstalledCohort({ ...options, lockedPackages: { "node_modules/ordinary-lib": { ...record, version: "1.0.0" } } }), /Non-Pi dependency left engine lock/);
+	delete record.integrity;
+	save();
+	assert.throws(() => inspectInstalledCohort(options), /Dependency integrity is not recorded/);
+});
+
 test("Pi SDK and TUI import-only exports resolve from their real ESM importers", (t) => {
 	// Card 271: createRequire.resolve rejects Pi's import-only SDK exports.
 	const consumer = temporary(t);
@@ -108,4 +125,18 @@ test("environment excludes inherited credentials, npm settings and Node preload 
 	assert.equal(env.NODE_OPTIONS, undefined);
 	assert.equal(env.OPENAI_API_KEY, undefined);
 	assert.equal(env.npm_config_userconfig, "/tmp/isolated-pi-release/npmrc");
+});
+
+test("public release downloads retain the existing proxy route without inheriting provider keys", () => {
+	// Card 271: removing proxy routing made npm's real GitHub-asset download time out.
+	const previous = process.env.HTTPS_PROXY;
+	try {
+		process.env.HTTPS_PROXY = "http://127.0.0.1:1234";
+		const env = isolatedEnvironment("/tmp/isolated-pi-release");
+		assert.equal(env.HTTPS_PROXY, "http://127.0.0.1:1234");
+		assert.equal(env.OPENAI_API_KEY, undefined);
+	} finally {
+		if (previous === undefined) delete process.env.HTTPS_PROXY;
+		else process.env.HTTPS_PROXY = previous;
+	}
 });

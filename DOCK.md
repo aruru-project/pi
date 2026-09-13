@@ -135,8 +135,7 @@ the independent acceptance entry on Node24 (the output must be new, outside this
 repository, with an existing parent):
 
 ```sh
-PATH=/home/luziyi/.nvm/versions/node/v24.21.0/bin:$PATH \
-  node scripts/verify-dock-release.mjs \
+node scripts/verify-dock-release.mjs \
   --manifest /tmp/pi-dock-release/manifest.json \
   --out /tmp/pi-dock-release-verification
 ```
@@ -146,17 +145,26 @@ actual SDK and TUI asset URLs, without overrides or a prebuilt consumer lock.
 Normal `npm install --omit=dev --ignore-scripts` generates the lock; the entry checks
 all installed Pi versions, embedded source provenance, dependency URLs and lock SRI,
 one copy of each cohort package, every Pi dependency's resolved entry (including
-SDK versus direct TUI), and non-Pi version/URL/SRI identities against the SDK's
-embedded shrinkwrap. It then runs `npm ci` from the generated lock and repeats the
-checks and SDK/TUI imports. HOME, XDG, Pi and npm configuration/cache are isolated;
-no sessions or model requests are created. No compilation is performed.
+SDK versus direct TUI), and recorded non-Pi versions, sources and integrity. Non-Pi
+resolution differences from the producer's build lock are reported, not rejected
+solely for differing. The consumer then runs `npm ci` from its generated lock and
+repeats the checks and SDK/TUI imports. HOME, XDG, Pi and npm configuration/cache
+are isolated; existing network proxy routing is retained, but model credentials
+are not inherited. No sessions, model requests or compilation are performed.
+
+The producer's build lock is not Dock's runtime lock. Dock must resolve its own
+complete manifest, review and commit that root lock, and have both Linux and
+Windows assembly consume it with `npm ci`. An outer `npm install <dock.tgz>` does
+not reproduce that root lock. Re-test current Dock behavior against the actual
+resolved tree; do not force an old upstream tree through private npm metadata or
+consumer overrides.
 
 Retain the copied manifest, consumer package/lock, npm logs and `verification.json`.
 The receipt is written only after both phases pass. Manifest SRI is checked against
 npm's installed lock; npm verifies downloaded tarball integrity. This does not
 independently reproduce the source build or verify GitHub release immutability.
-Until actual URLs are published and this command passes, normal remote install and
-shrinkwrap behavior remain **unverified**. Do not repair a failing gate with overrides
+Until actual URLs are published and this command passes, normal remote installation
+and reproduction from the generated lock remain **unverified**. Do not repair a failing gate with overrides
 or a seeded lock. Dock must not adopt a release that passes only the development
 asset smoke. Verify the Linux nested Dock installation and Windows `npm ci` assembly
 separately through their normal entry points.
