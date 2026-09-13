@@ -258,6 +258,12 @@ export interface ModelMutationOptions {
 	persist?: boolean;
 }
 
+/** Options specific to selecting a model directly. */
+export interface ModelSelectionOptions extends ModelMutationOptions {
+	/** Preserve the current thinking preference, using the saved/Pi default when leaving a non-thinking model. */
+	preserveThinkingLevel?: boolean;
+}
+
 /** Result from cycleModel() */
 export interface ModelCycleResult {
 	model: Model<any>;
@@ -1656,13 +1662,17 @@ export class AgentSession {
 	 * Persists to global defaults only when options.persist is true.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>, options: ModelMutationOptions = {}): Promise<void> {
+	async setModel(model: Model<any>, options: ModelSelectionOptions = {}): Promise<void> {
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
 
 		const previousModel = this.model;
-		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
+		const thinkingLevel = options.preserveThinkingLevel
+			? this.supportsThinking()
+				? this.thinkingLevel
+				: (this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL)
+			: this._getThinkingLevelForModelSwitch(model);
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		if (options.persist) {
@@ -1671,7 +1681,7 @@ export class AgentSession {
 		}
 
 		// Apply thinking level for the new model.
-		// Per-model thinking level overrides take priority over the global default.
+		// Unless explicitly preserved, per-model thinking overrides take priority over the global default.
 		// Model persistence does not implicitly rewrite the global thinking default.
 		this.setThinkingLevel(thinkingLevel);
 
