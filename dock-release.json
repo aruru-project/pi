@@ -1,0 +1,16 @@
+{
+	"version": "0.85.1-dock.1",
+	"node": ">=24.0.0",
+	"repository": "https://github.com/aruru-project/pi",
+	"runtimeRoots": ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"],
+	"upstream": {
+		"repository": "https://github.com/earendil-works/pi.git",
+		"tag": "v0.85.1",
+		"commit": "d981de1229ef899957bbe968bc8dcda02a21f477",
+		"version": "0.85.1"
+	},
+	"modelData": {
+		"package": "@earendil-works/pi-ai",
+		"integrity": "sha512-+VgVIJDkDO2efYJKEEqvPTH4zmnIaXdAppGbO+vKFA9qy5PdhFiAenuFAkU+oiCSfOC4dMHDyrjdQeL4ZoC5CQ=="
+	}
+}
