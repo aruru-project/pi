@@ -168,6 +168,20 @@ The resolver runs on every reload and wins over `systemPrompt`, a discovered `SY
 
 `getSystemPrompt()` returns `undefined` for a default-body choice, `getDefaultSystemPromptBody()` returns the loaded body, and `getSystemPromptSource()` returns the declared source (optional for in-memory choices). Custom `ResourceLoader` implementations may implement `getDefaultSystemPromptBody()`; existing ones need no change. Extensions see the loaded body as `systemPromptOptions.defaultSystemPromptBody`.
 
+<a id="model-preferences"></a>
+
+### Model and thinking preferences
+
+`session.setModel(model, { preserveThinkingLevel: true })` keeps the current thinking preference when switching models. If the current model has no reasoning, it uses the saved default level (or Pi's default) instead. The level is clamped to the new model once, before `model_select` observers run. Without the option, `setModel` behaves as upstream: the per-model level first, then the global default.
+
+Older extensions expect `pi.setModel` and `pi.setThinkingLevel` to change the saved defaults, as Pi 0.84 did. A host keeps that behavior by passing `extensionModelMutationPolicy: "legacy-defaults"` to `createAgentSession()` or `createAgentSessionFromServices()`. Set it in the runtime factory so replacement sessions get it too; extension reload keeps it. It changes only those two extension calls:
+
+- `pi.setModel` also saves the default provider and model, without adding the model to scoped or enabled models, and keeps the thinking preference as above.
+- `pi.setThinkingLevel` saves the new effective level when it changes, except when a model without reasoning clamps it to `off`; a plain model cannot erase the saved preference.
+- Settings are updated, and their writes queued, before change observers run. Writes stay asynchronous: `pi.setThinkingLevel` still returns nothing, and the host keeps `settingsManager.flush()` and `drainErrors()`.
+
+The default policy, `"session-only"`, is upstream behavior. Public SDK setters, `persist: true` and the cycle APIs are unaffected.
+
 ## Examples
 
 | Example | Purpose |

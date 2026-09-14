@@ -1730,7 +1730,9 @@ export interface ExtensionAPI {
 	// =========================================================================
 
 	/**
-	 * Set the model for the current session without changing the configured default for new sessions.
+	 * Set the model for the current session. Defaults to session-only.
+	 * Hosts opting into extensionModelMutationPolicy: "legacy-defaults" also save the default
+	 * provider/model (without expanding scope) and preserve the previous thinking preference.
 	 * Returns false if authentication is not configured for the model's provider.
 	 */
 	setModel(model: Model<any>): Promise<boolean>;
@@ -1739,8 +1741,9 @@ export interface ExtensionAPI {
 	getThinkingLevel(): ThinkingLevel;
 
 	/**
-	 * Set the thinking level (clamped to model capabilities) for the current session without changing the configured default
-	 * for new sessions.
+	 * Set the thinking level (clamped to model capabilities). Defaults to session-only.
+	 * With host policy "legacy-defaults", save a changed effective level unless a plain model
+	 * clamps it to off. Settings update before change events; queued writes are not a disk receipt.
 	 */
 	setThinkingLevel(level: ThinkingLevel): void;
 
