@@ -16,7 +16,7 @@ import type {
 	ToolResultMessage,
 } from "@earendil-works/pi-ai/compat";
 import { registerFauxProvider, streamSimple } from "@earendil-works/pi-ai/compat";
-import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
+import { AgentSession, type AgentSessionConfig, type AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type { ExtensionRunner, ExtensionUIContext } from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
@@ -118,6 +118,7 @@ export interface HarnessOptions {
 	resourceLoader?: ResourceLoader;
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
 	withConfiguredAuth?: boolean;
+	extensionModelMutationPolicy?: AgentSessionConfig["extensionModelMutationPolicy"];
 	modelsJson?: Record<string, unknown>;
 	/** Session to continue, for example to test a resume. Default: a new in-memory session. */
 	sessionManager?: SessionManager;
@@ -242,6 +243,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		allowedToolNames: options.allowedToolNames,
 		excludedToolNames: options.excludedToolNames,
 		extensionRunnerRef,
+		extensionModelMutationPolicy: options.extensionModelMutationPolicy,
 	});
 
 	const events: AgentSessionEvent[] = [];
