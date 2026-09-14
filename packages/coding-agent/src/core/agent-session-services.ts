@@ -55,6 +55,8 @@ export interface CreateAgentSessionFromServicesOptions {
 	services: AgentSessionServices;
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
+	/** Extension-only compatibility policy; forwarded to createAgentSession. */
+	extensionModelMutationPolicy?: CreateAgentSessionOptions["extensionModelMutationPolicy"];
 	model?: Model<any>;
 	thinkingLevel?: ThinkingLevel;
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
@@ -217,5 +219,6 @@ export async function createAgentSessionFromServices(
 		noTools: options.noTools,
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
+		extensionModelMutationPolicy: options.extensionModelMutationPolicy,
 	});
 }

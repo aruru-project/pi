@@ -1703,7 +1703,7 @@ Typical `sourceInfo.source` values:
 
 ### pi.setModel(model)
 
-Set the model for the current session. The change is recorded in session history and restored when that session is resumed, but it does not change the configured `defaultProvider` or `defaultModel` used by new sessions. Returns `false` if authentication is not configured for the model's provider. See [models.md](models.md) for configuring custom models.
+Set the model for the current session. By default, the change is recorded in session history and restored when that session is resumed, but it does not change the configured `defaultProvider` or `defaultModel` used by new sessions. Returns `false` if authentication is not configured for the model's provider. See [models.md](models.md) for configuring custom models.
 
 ```typescript
 const model = ctx.modelRegistry.find("anthropic", "claude-sonnet-4-5");
@@ -1715,11 +1715,26 @@ if (model) {
 }
 ```
 
+In the Dock-derived SDK, a host can opt into `extensionModelMutationPolicy: "legacy-defaults"`
+at session creation. Then `pi.setModel` also saves default provider/model without
+expanding scoped/enabled models. It preserves the current thinking preference when
+leaving a reasoning model, or the saved/Pi default when leaving a plain model, and
+clamps once before observers run. The plugin API and auth false/rejection semantics
+are unchanged. See [SDK model mutation policy](sdk.md#model-mutation-policy-dock-derived-sdk).
+
 ### pi.getThinkingLevel() / pi.setThinkingLevel(level)
 
 Get the current thinking level. Level is clamped to model capabilities (non-reasoning models always use "off"). Changes emit `thinking_level_select`.
 
-`pi.setThinkingLevel()` changes the thinking level for the current session. The change is recorded in session history and restored when that session is resumed, but it does not change the configured default used by new sessions.
+By default, `pi.setThinkingLevel()` changes only the current session. The change is recorded in session history and restored when that session is resumed, without changing the configured default used by new sessions.
+
+With host policy `"legacy-defaults"`, a changed effective level is also saved unless
+a plain model clamps it to `off`. Unchanged effective levels do not overwrite the
+saved preference. Settings memory and queued writes update before model/thinking
+change observers, including thinking changes caused by `pi.setModel`. Neither setter
+promises disk persistence on return; this setter remains void. The host owns settings
+flush and error reporting. Later asynchronous handlers still read live session state,
+not a snapshot protected from subsequent mutations.
 
 ```typescript
 const current = pi.getThinkingLevel();  // "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"

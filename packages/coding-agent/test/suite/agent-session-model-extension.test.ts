@@ -1,8 +1,8 @@
 import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Model, type Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
-import type { BuildSystemPromptOptions, ExtensionAPI } from "../../src/index.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "../../src/index.ts";
 import { createHarness, getAssistantTexts, type Harness } from "./harness.ts";
 
 describe("AgentSession model and extension characterization", () => {
@@ -46,7 +46,7 @@ describe("AgentSession model and extension characterization", () => {
 		expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
 	});
 
-	it("explicit model selection preserves thinking before plugins observe the final clamped state", async () => {
+	it.each([false, true])("preserves thinking before plugin observation (legacy extension: %s)", async (legacy) => {
 		// Dock card 271: preserving a restored session's preference must not emit an intermediate default.
 		for (const scenario of [
 			{ reasoning: true, current: "high", saved: "low", expected: "high", changes: [] },
@@ -54,8 +54,11 @@ describe("AgentSession model and extension characterization", () => {
 			{ reasoning: false, current: "off", saved: undefined, expected: "medium", changes: ["medium"] },
 			{ reasoning: true, current: "max", saved: "low", expected: "high", changes: ["high"] },
 		] as const) {
-			const observed: Array<string | undefined> = [];
+			let api: ExtensionAPI | undefined;
+			const observed: unknown[] = [];
+			const thinkingObserved: unknown[] = [];
 			const harness = await createHarness({
+				extensionModelMutationPolicy: legacy ? "legacy-defaults" : undefined,
 				models: [
 					{ id: "faux-1", reasoning: scenario.reasoning },
 					{ id: "faux-2", reasoning: true },
@@ -66,8 +69,18 @@ describe("AgentSession model and extension characterization", () => {
 				},
 				extensionFactories: [
 					(pi) => {
+						api = pi;
+						const observe = (ctx: ExtensionContext) => ({
+							model: ctx.model?.id,
+							level: ctx.thinkingLevel,
+							apiLevel: pi.getThinkingLevel(),
+							settings: harness.settingsManager.getGlobalSettings(),
+						});
 						pi.on("model_select", (_event, ctx) => {
-							observed.push(ctx.thinkingLevel);
+							observed.push(observe(ctx));
+						});
+						pi.on("thinking_level_select", (_event, ctx) => {
+							thinkingObserved.push(observe(ctx));
 						});
 					},
 				],
@@ -76,10 +89,27 @@ describe("AgentSession model and extension characterization", () => {
 			if (scenario.current === "max") harness.getModel().thinkingLevelMap = { max: "max" };
 			harness.session.setThinkingLevel(scenario.current);
 			harness.events.length = 0;
+			thinkingObserved.length = 0;
 			const previousEntries = harness.sessionManager.getEntries().length;
-			await harness.session.setModel(harness.getModel("faux-2")!, { preserveThinkingLevel: true });
+			if (legacy) {
+				expect(await api!.setModel(harness.getModel("faux-2")!)).toBe(true);
+			} else {
+				await harness.session.setModel(harness.getModel("faux-2")!, { preserveThinkingLevel: true });
+			}
+			const saved = legacy && scenario.changes.length > 0 ? scenario.expected : scenario.saved;
+			const expectedObservation = {
+				model: "faux-2",
+				level: scenario.expected,
+				apiLevel: scenario.expected,
+				settings: {
+					defaultThinkingLevel: saved,
+					modelThinkingLevels: { "faux/faux-2": "minimal" },
+					...(legacy ? { defaultProvider: harness.getModel().provider, defaultModel: "faux-2" } : {}),
+				},
+			};
 			expect(harness.session.thinkingLevel).toBe(scenario.expected);
-			expect(observed).toEqual([scenario.expected]);
+			expect(observed).toEqual([expectedObservation]);
+			expect(thinkingObserved).toEqual(scenario.changes.map(() => expectedObservation));
 			expect(harness.eventsOfType("thinking_level_changed").map((event) => event.level)).toEqual(scenario.changes);
 			expect(
 				harness.sessionManager
@@ -88,9 +118,197 @@ describe("AgentSession model and extension characterization", () => {
 					.filter((entry) => entry.type === "thinking_level_change")
 					.map((entry) => entry.thinkingLevel),
 			).toEqual(scenario.changes);
-			expect(harness.settingsManager.getDefaultThinkingLevel()).toBe(scenario.saved);
-			expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
+			expect(harness.settingsManager.getDefaultThinkingLevel()).toBe(saved);
+			expect(harness.settingsManager.getDefaultModel()).toBe(legacy ? "faux-2" : undefined);
 		}
+	});
+
+	// Dock card 271: real extension setters must retain 0.84 defaults only when opted in.
+	it("legacy extension defaults preserve plain-model preferences without expanding scope", async () => {
+		let api: ExtensionAPI | undefined;
+		const observed: unknown[] = [];
+		const modelEvents: string[] = [];
+		const harness = await createHarness({
+			extensionModelMutationPolicy: "legacy-defaults",
+			models: [
+				{ id: "reasoning", reasoning: true },
+				{ id: "plain", reasoning: false },
+			],
+			settings: { defaultThinkingLevel: "low", enabledModels: ["faux/reasoning"] },
+			extensionFactories: [
+				(pi) => {
+					api = pi;
+					pi.on("thinking_level_select", (event, ctx) => {
+						observed.push({
+							level: event.level,
+							model: ctx.model?.id,
+							apiLevel: pi.getThinkingLevel(),
+							settings: harness.settingsManager.getGlobalSettings(),
+						});
+					});
+					pi.on("model_select", (event) => {
+						modelEvents.push(event.model.id);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const reasoning = harness.getModel();
+		const plain = harness.getModel("plain")!;
+		const scope = [{ model: reasoning, thinkingLevel: "low" as const }];
+		harness.session.setScopedModels(scope);
+		const settings = harness.settingsManager;
+		const saveThinking = vi.spyOn(settings, "setDefaultThinkingLevel");
+
+		api!.setThinkingLevel("max");
+		expect(observed).toEqual([
+			{
+				level: "high",
+				model: "reasoning",
+				apiLevel: "high",
+				settings: { defaultThinkingLevel: "high", enabledModels: ["faux/reasoning"] },
+			},
+		]);
+		expect(saveThinking).toHaveBeenCalledExactlyOnceWith("high");
+		settings.setDefaultThinkingLevel("low");
+		saveThinking.mockClear();
+		observed.length = 0;
+		api!.setThinkingLevel("max"); // unchanged effective high must not overwrite saved low
+		expect(saveThinking).not.toHaveBeenCalled();
+		expect(observed).toEqual([]);
+
+		expect(await api!.setModel(reasoning)).toBe(true); // same model still saves defaults
+		expect(settings.getDefaultModel()).toBe("reasoning");
+		expect(modelEvents).toEqual([]);
+		expect(await api!.setModel(plain)).toBe(true);
+		expect(harness.session.thinkingLevel).toBe("off");
+		expect(settings.getDefaultThinkingLevel()).toBe("low");
+		api!.setThinkingLevel("max"); // plain off must not erase the old preference
+		expect(saveThinking).not.toHaveBeenCalled();
+		expect(await api!.setModel(reasoning)).toBe(true);
+		expect(harness.session.thinkingLevel).toBe("low");
+		expect(saveThinking).toHaveBeenCalledExactlyOnceWith("low");
+		expect(observed).toEqual([
+			{
+				level: "off",
+				model: "plain",
+				apiLevel: "off",
+				settings: {
+					defaultProvider: plain.provider,
+					defaultModel: "plain",
+					defaultThinkingLevel: "low",
+					enabledModels: ["faux/reasoning"],
+				},
+			},
+			{
+				level: "low",
+				model: "reasoning",
+				apiLevel: "low",
+				settings: {
+					defaultProvider: reasoning.provider,
+					defaultModel: "reasoning",
+					defaultThinkingLevel: "low",
+					enabledModels: ["faux/reasoning"],
+				},
+			},
+		]);
+		expect(harness.session.scopedModels).toEqual(scope);
+		expect(settings.getEnabledModels()).toEqual(["faux/reasoning"]);
+		expect(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "thinking_level_change")
+				.map((entry) => entry.thinkingLevel),
+		).toEqual(["high", "off", "low"]);
+		await settings.flush();
+	});
+
+	it("default extension setters and SDK explicit false remain session-only with legacy opt-in", async () => {
+		let api: ExtensionAPI | undefined;
+		const harness = await createHarness({
+			models: [
+				{ id: "one", reasoning: true },
+				{ id: "two", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					api = pi;
+				},
+			],
+		});
+		harnesses.push(harness);
+		expect(await api!.setModel(harness.getModel("two")!)).toBe(true);
+		api!.setThinkingLevel("high");
+		expect(harness.settingsManager.getGlobalSettings()).toEqual({});
+
+		const legacy = await createHarness({
+			extensionModelMutationPolicy: "legacy-defaults",
+			models: [
+				{ id: "one", reasoning: true },
+				{ id: "two", reasoning: true },
+			],
+			settings: {
+				defaultThinkingLevel: "low",
+				modelThinkingLevels: { "faux/two": "minimal" },
+				enabledModels: ["faux/one"],
+			},
+		});
+		harnesses.push(legacy);
+		const defaults = legacy.settingsManager.getGlobalSettings();
+		legacy.session.setScopedModels([{ model: legacy.getModel() }]);
+		await legacy.session.setModel(legacy.getModel("two")!);
+		expect(legacy.session.thinkingLevel).toBe("minimal");
+		legacy.session.setThinkingLevel("high");
+		await legacy.session.setModel(legacy.getModel("two")!, { persist: false });
+		legacy.session.setThinkingLevel("max", { persist: false });
+		expect(legacy.settingsManager.getGlobalSettings()).toEqual(defaults);
+		await legacy.session.setModel(legacy.getModel("two")!, { persist: true });
+		legacy.session.setThinkingLevel("max", { persist: true });
+		expect(legacy.settingsManager.getDefaultThinkingLevel()).toBe("max");
+		expect(legacy.session.thinkingLevel).toBe("high");
+		expect(legacy.session.scopedModels.map(({ model }) => model.id)).toEqual(["one", "two"]);
+		expect(legacy.settingsManager.getEnabledModels()).toEqual(["faux/one", "faux/two"]);
+	});
+
+	it("legacy extension model auth failures keep false/rejection semantics without mutation", async () => {
+		let api: ExtensionAPI | undefined;
+		const selections: string[] = [];
+		const harness = await createHarness({
+			extensionModelMutationPolicy: "legacy-defaults",
+			withConfiguredAuth: false,
+			models: [
+				{ id: "one", reasoning: true },
+				{ id: "two", reasoning: true },
+			],
+			extensionFactories: [
+				(pi) => {
+					api = pi;
+					pi.on("model_select", () => {
+						selections.push("model");
+					});
+					pi.on("thinking_level_select", () => {
+						selections.push("thinking");
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const model = harness.session.model;
+		const level = harness.session.thinkingLevel;
+		expect(await api!.setModel(harness.getModel("two")!)).toBe(false);
+		const configured = vi.spyOn(harness.session.modelRuntime, "hasConfiguredAuth").mockReturnValue(true);
+		const auth = vi.spyOn(harness.session.modelRuntime, "checkAuth").mockRejectedValue(new Error("auth failed"));
+		await expect(api!.setModel(harness.getModel("two")!)).rejects.toThrow("auth failed");
+		auth.mockResolvedValue(undefined);
+		await expect(api!.setModel(harness.getModel("two")!)).rejects.toThrow("No API key");
+		configured.mockRestore();
+		auth.mockRestore();
+		expect(harness.session.model).toBe(model);
+		expect(harness.session.thinkingLevel).toBe(level);
+		expect(harness.sessionManager.getEntries()).toEqual([]);
+		expect(harness.settingsManager.getGlobalSettings()).toEqual({});
+		expect(harness.events).toEqual([]);
+		expect(selections).toEqual([]);
 	});
 
 	it("only persists model and thinking defaults when requested", async () => {

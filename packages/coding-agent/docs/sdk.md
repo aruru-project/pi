@@ -439,6 +439,39 @@ for (const diagnostic of diagnostics) {
 
 > See [examples/sdk/02-custom-model.ts](../examples/sdk/02-custom-model.ts)
 
+#### Model mutation policy (Dock-derived SDK)
+
+Public `session.setModel(model, options?)` and `session.setThinkingLevel(level, options?)`
+are session-only by default, including explicit `{ persist: false }`. `{ persist: true }`
+saves global defaults; model persistence also adds the selected model to a nonempty
+scope (and nonempty `enabledModels`), while thinking persistence saves the requested
+level even if the current model clamps it. Model persistence alone does not save
+thinking. Model switches normally choose per-model thinking, then global thinking,
+then the current session preference.
+
+`session.setModel(model, { preserveThinkingLevel: true })` instead preserves the
+current preference when leaving a reasoning model, or the saved/Pi default
+when leaving a plain model. It clamps once before recording and notifying observers.
+
+To retain 0.84 behavior for existing extensions, pass
+`extensionModelMutationPolicy: "legacy-defaults"` when creating a session with
+`createAgentSession()` or `createAgentSessionFromServices()`. The default is
+`"session-only"`. This option affects only extension `pi.setModel` and
+`pi.setThinkingLevel`, not public SDK setters or cycle APIs:
+
+- Model selection saves default provider/model without expanding scope, and uses
+  the same thinking preservation as `preserveThinkingLevel: true`.
+- Thinking saves the effective level only when it changes and either the target
+  supports thinking or the effective level is not `off`. A plain model cannot erase
+  the saved reasoning preference by clamping it to `off`.
+- Settings memory and write queues update before model/thinking change observers.
+  Writes are asynchronous; `pi.setThinkingLevel` remains void. Hosts still own
+  `settingsManager.flush()` and `drainErrors()`. Project settings still override global.
+
+Set the option in the existing runtime factory's `createAgentSessionFromServices`
+call so every replacement session receives it. Extension reload preserves the policy;
+there is no separate `bindExtensions` setting.
+
 ### API Keys and OAuth
 
 Authentication resolution priority (handled by `ModelRuntime`):

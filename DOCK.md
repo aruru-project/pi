@@ -14,7 +14,7 @@ https://github.com/earendil-works/pi. Keep `main` as a pure upstream mirror.
 so they cannot trigger upstream's inherited `v*` binary/npm publishing workflow.
 They identify reviewed fork source, not mirror updates or a moving branch.
 
-`dock-release.json` owns the derivative version (`0.85.1-dock.1`), Node requirement
+`dock-release.json` owns the derivative version (`0.85.1-dock.2`), Node requirement
 (`>=24.0.0`), fork repository, runtime roots and pinned model-data input integrity.
 Keep prompt-body changes separate from model-selection compatibility changes when
 committing so both can be reviewed and replayed independently.
@@ -112,6 +112,29 @@ final level before `model_select` observes it. Omitting the option retains v0.85
 behavior; persistence defaults and cycle/thinking APIs are unchanged. Dock owns
 its existing global-settings save/error contract through public APIs. This patch
 is separate from the prompt-body patch and should be reviewed independently.
+
+### Existing extension compatibility (dock.2)
+
+Dock must pass `extensionModelMutationPolicy: "legacy-defaults"` to its existing
+`createAgentSessionFromServices` call inside the runtime factory. That factory is
+reused for new/resumed/forked sessions. The option forwards through
+`createAgentSession` to `AgentSession`, survives extension reload, and is available
+before `session_start`. It changes only `pi.setModel` / `pi.setThinkingLevel`:
+
+- Model selection saves global default provider/model without expanding scoped or
+  enabled models. Thinking uses `preserveThinkingLevel: true` and one final clamp.
+- Thinking saves the effective level only when it changes and the target supports
+  thinking (or the effective level is not `off`). Moving to a plain model does not
+  erase the saved preference; leaving it restores the saved default or Pi's default.
+- Settings memory and queued writes precede model/thinking change observers.
+  `pi.setThinkingLevel` still returns void, not a disk-success receipt. Neither
+  setter drains settings errors; the host retains `flush()` / `drainErrors()` ownership.
+
+Omitting the option (or choosing `"session-only"`) retains v0.85 extension behavior.
+Public SDK setters remain session-only unless explicitly persisted. SDK
+`persist: true` still expands a nonempty model scope and saves requested thinking
+levels, not this legacy effective-level rule. Cycle APIs are unchanged. Native
+project-over-global settings precedence is unchanged.
 
 ## Release, upgrade and rollback
 
