@@ -14,7 +14,7 @@ https://github.com/earendil-works/pi. Keep `main` as a pure upstream mirror.
 so they cannot trigger upstream's inherited `v*` binary/npm publishing workflow.
 They identify reviewed fork source, not mirror updates or a moving branch.
 
-`dock-release.json` owns the derivative version (`0.85.1-dock.2`), Node requirement
+`dock-release.json` owns the derivative version (`0.85.1-dock.3`), Node requirement
 (`>=24.0.0`), fork repository, runtime roots and pinned model-data input integrity.
 Keep prompt-body changes separate from model-selection compatibility changes when
 committing so both can be reviewed and replayed independently.
