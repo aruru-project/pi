@@ -102,6 +102,21 @@ The old candidate-5 has working runtime APIs but uses obsolete `v*` asset metada
 it must not be published. Rebuild reviewed clean source to obtain `dock-v*` release
 assets. Publication status is not embedded in immutable packages; verify it remotely.
 
+## Read-only compaction prompt templates
+
+The public SDK root exports `getCompactionPromptTemplates(): CompactionPromptTemplates`.
+Its four readonly string fields, `system`, `summarize`, `update` and `turnPrefix`,
+reference the same default instruction constants used by native compaction. Each
+call returns a fresh container, requires no runtime or session, and performs no
+I/O or model calls. This is inspection only, not a prompt override API.
+
+These are default instruction bodies, not the complete current request payload.
+Pi separately assembles dynamic conversation text and the previous summary.
+Additional focus remains appended only to the history summary, not the turn prefix.
+Extensions can cancel compaction or supply their own summary. Prompt assembly,
+model/thinking selection and retries are unchanged. See the
+[SDK documentation](packages/coding-agent/docs/sdk.md#compaction-prompt-templates-dock-derived-sdk).
+
 ## Independent model-selection addition
 
 `session.setModel(model, { preserveThinkingLevel: true })`, typed by

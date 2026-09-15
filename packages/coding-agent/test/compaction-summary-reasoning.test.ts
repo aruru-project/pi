@@ -1,5 +1,10 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import {
+	type AssistantMessage,
+	type Context,
+	createAssistantMessageEventStream,
+	type Model,
+} from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CompactionPreparation,
@@ -8,6 +13,7 @@ import {
 	generateSummary,
 	generateSummaryWithUsage,
 } from "../src/core/compaction/index.ts";
+import { type CompactionPromptTemplates, getCompactionPromptTemplates } from "../src/index.ts";
 
 const { completeSimpleMock } = vi.hoisted(() => ({
 	completeSimpleMock: vi.fn(),
@@ -66,6 +72,89 @@ const mockToolCallResponse: AssistantMessage = {
 };
 
 const messages: AgentMessage[] = [{ role: "user", content: "Summarize this.", timestamp: Date.now() }];
+
+// Dock #291: expose all native compaction instructions without changing generation.
+describe("public compaction prompt templates", () => {
+	it("returns all four readonly texts in independent containers without a session", () => {
+		const templates: CompactionPromptTemplates = getCompactionPromptTemplates();
+		const original = { ...templates };
+		expect(Object.keys(templates).sort()).toEqual(["summarize", "system", "turnPrefix", "update"]);
+		for (const text of Object.values(templates)) {
+			expect(typeof text).toBe("string");
+			expect(text.length).toBeGreaterThan(0);
+		}
+		expect(getCompactionPromptTemplates()).not.toBe(templates);
+		// JavaScript callers can mutate their container, but never the shared defaults.
+		Object.assign(templates, { system: "changed", summarize: "changed", update: "changed", turnPrefix: "changed" });
+		expect(getCompactionPromptTemplates()).toEqual(original);
+	});
+
+	it.each([
+		{ previousSummary: undefined, customInstructions: undefined },
+		{ previousSummary: "Previous checkpoint.", customInstructions: undefined },
+		{ previousSummary: undefined, customInstructions: "Keep the migration constraints." },
+		{ previousSummary: "Previous checkpoint.", customInstructions: "Keep the migration constraints." },
+	])("matches real history and split-turn requests: %j", async ({ previousSummary, customInstructions }) => {
+		const templates = getCompactionPromptTemplates();
+		const model = createModel(true);
+		const requests: Context[] = [];
+		const streamFn: StreamFn = (requestModel, context) => {
+			expect(requestModel).toBe(model);
+			requests.push(context);
+			const stream = createAssistantMessageEventStream();
+			stream.push({ type: "done", reason: "stop", message: mockSummaryResponse });
+			return stream;
+		};
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "entry-keep",
+			messagesToSummarize: messages,
+			turnPrefixMessages: [{ role: "user", content: "Continue the migration.", timestamp: 1 }],
+			isSplitTurn: true,
+			previousSummary,
+			tokensBefore: 100,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
+		};
+
+		await compact(preparation, model, undefined, undefined, customInstructions, undefined, "medium", streamFn);
+
+		expect(requests).toHaveLength(2);
+		const previousContext = previousSummary
+			? "<previous-summary>\nPrevious checkpoint.\n</previous-summary>\n\n"
+			: "";
+		const focus = customInstructions ? "\n\nAdditional focus: Keep the migration constraints." : "";
+		expect(requests[0]).toEqual({
+			systemPrompt: templates.system,
+			messages: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: `<conversation>\n[User]: Summarize this.\n</conversation>\n\n${previousContext}${previousSummary ? templates.update : templates.summarize}${focus}`,
+						},
+					],
+					timestamp: expect.any(Number),
+				},
+			],
+		});
+		expect(requests[1]).toEqual({
+			systemPrompt: templates.system,
+			messages: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: `<conversation>\n[User]: Continue the migration.\n</conversation>\n\n${templates.turnPrefix}`,
+						},
+					],
+					timestamp: expect.any(Number),
+				},
+			],
+		});
+	});
+});
 
 describe("generateSummary reasoning options", () => {
 	beforeEach(() => {

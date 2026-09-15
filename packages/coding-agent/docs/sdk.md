@@ -583,6 +583,32 @@ A resolver is authoritative over `systemPrompt`, discovered SYSTEM.md and `syste
 
 To select a native SYSTEM.md explicitly, return `{ kind: "custom", text: await readFile(path, "utf8"), source: { path } }`. This retains native custom-prompt semantics, including the existing empty-string behavior. Without a resolver, all native discovery and override behavior is unchanged. Custom `ResourceLoader` implementations may optionally implement `getDefaultSystemPromptBody()`; existing implementations need no changes. The loaded body also appears in `BuildSystemPromptOptions.defaultSystemPromptBody`, including extension prompt options.
 
+### Compaction Prompt Templates (Dock-derived SDK)
+
+```typescript
+import {
+  type CompactionPromptTemplates,
+  getCompactionPromptTemplates,
+} from "@earendil-works/pi-coding-agent";
+
+const templates: CompactionPromptTemplates = getCompactionPromptTemplates();
+// Readonly string fields: system, summarize, update, turnPrefix.
+```
+
+The getter returns the default instruction text used by native compaction: the
+shared system prompt, initial history summary instructions, history update
+instructions, and split-turn prefix instructions. Each call returns a fresh
+container; changing it from JavaScript cannot change Pi's defaults. No runtime or
+session is needed, and the getter performs no I/O or model calls. It does not
+configure or override compaction.
+
+These texts are not a complete current request payload. Pi separately assembles
+dynamic conversation text and, for updates, the previous summary. Optional
+additional focus is appended only to the history summary, not the turn prefix.
+Extensions may cancel compaction or take over with their own summary through
+`session_before_compact`. Model/thinking selection, prompt assembly and retries
+are unchanged. See [Compaction](compaction.md) for the native flow.
+
 ### Tools
 
 Specify which built-in tools to enable:
@@ -1270,6 +1296,10 @@ getExamplesPath
 // Session management
 SessionManager
 SettingsManager
+
+// Default compaction instructions (inspection only)
+getCompactionPromptTemplates
+type CompactionPromptTemplates
 
 // Tool factories
 createCodingTools
