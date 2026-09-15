@@ -182,6 +182,14 @@ Older extensions expect `pi.setModel` and `pi.setThinkingLevel` to change the sa
 
 The default policy, `"session-only"`, is upstream behavior. Public SDK setters, `persist: true` and the cycle APIs are unaffected.
 
+<a id="compaction-prompt-templates"></a>
+
+### Default compaction prompts
+
+`getCompactionPromptTemplates()` returns the four default instruction texts that native compaction sends, as read-only strings: `system`, `summarize` (first summary), `update` (when a previous summary exists) and `turnPrefix` (when a turn is split). It needs no session, does no I/O and calls no model; each call returns a new object.
+
+These are only the instructions, not whole requests: Pi adds the conversation text, the previous summary and any extra focus around them. The function is for showing what compaction asks for, not for changing it. Extensions that want different behavior can still cancel compaction or supply their own summary.
+
 ## Examples
 
 | Example | Purpose |
