@@ -954,6 +954,29 @@ Create a concise checkpoint of the user's request and the progress shown above. 
 
 Only summarize information explicitly present above. Do not infer or recreate later messages.`;
 
+/** Default instruction text used by native compaction, not a complete request payload. */
+export interface CompactionPromptTemplates {
+	readonly system: string;
+	readonly summarize: string;
+	readonly update: string;
+	readonly turnPrefix: string;
+}
+
+/**
+ * Return a fresh container of native compaction's default instructions.
+ * No runtime or session is needed; this performs no I/O or model calls.
+ * Conversation text, previous summaries, and additional focus are assembled separately.
+ * Extensions may cancel compaction or provide their own summary instead.
+ */
+export function getCompactionPromptTemplates(): CompactionPromptTemplates {
+	return {
+		system: SUMMARIZATION_SYSTEM_PROMPT,
+		summarize: SUMMARIZATION_PROMPT,
+		update: UPDATE_SUMMARIZATION_PROMPT,
+		turnPrefix: TURN_PREFIX_SUMMARIZATION_PROMPT,
+	};
+}
+
 /**
  * Generate summaries for compaction using prepared data.
  * Returns CompactionResult - SessionManager adds uuid/parentUuid when saving.
