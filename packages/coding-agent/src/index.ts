@@ -240,7 +240,12 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
-export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
+export type {
+	ResourceCollision,
+	ResourceDiagnostic,
+	ResourceLoader,
+	SystemPromptSelection,
+} from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage
 export {
@@ -326,6 +331,11 @@ export {
 	type SkillFrontmatter,
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
+export {
+	type DefaultSystemPromptBody,
+	getDefaultSystemPromptBody,
+	parseDefaultSystemPromptBody,
+} from "./core/system-prompt.ts";
 export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
 // Tools
 export {

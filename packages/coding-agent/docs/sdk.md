@@ -117,6 +117,57 @@ The CLI loads `codemode`, `tool_search`, and MCP as built-in extensions. SDK ses
 
 See the focused examples for [models](../examples/sdk/02-custom-model.ts), [tools](../examples/sdk/05-tools.ts), [extensions](../examples/sdk/06-extensions.ts), and [full control](../examples/sdk/12-full-control.ts).
 
+## Dock additions
+
+This fork adds a few SDK features that Alu Dock relies on. Pi behaves as upstream unless a host opts in.
+
+<a id="editable-default-prompt"></a>
+
+### Editable default prompt prose
+
+`SYSTEM.md` and `systemPromptOverride` replace the whole default prefix: opening paragraph, tool list, rules and documentation. To edit only the default wording while Pi keeps building the dynamic parts, give `DefaultResourceLoader` a `systemPromptResolver`:
+
+```typescript
+import { readFile } from "node:fs/promises";
+import {
+  DefaultResourceLoader,
+  getDefaultSystemPromptBody,
+  parseDefaultSystemPromptBody,
+} from "@earendil-works/pi-coding-agent";
+
+// Seed an application-owned JSON file with the defaults, then let users edit it.
+const initialBody = getDefaultSystemPromptBody();
+const bodyPath = "/absolute/path/to/system.json";
+const loader = new DefaultResourceLoader({
+  cwd,
+  agentDir,
+  systemPromptResolver: async () => ({
+    kind: "default",
+    body: parseDefaultSystemPromptBody(JSON.parse(await readFile(bodyPath, "utf8"))),
+    source: { path: bodyPath },
+  }),
+});
+await loader.reload();
+```
+
+`DefaultSystemPromptBody` has five fields, each placed in one part of the sectioned prompt:
+
+| Field | Where it goes |
+|---|---|
+| `intro` | the untagged opening paragraph (`preamble`) |
+| `toolNotes` | after the tool list in `<tools>` |
+| `guidelines` | after the tool-specific rules in `<rules>` |
+| `documentationHeading` | first line of `<docs>` |
+| `documentationInstructions` | bullets after the documentation paths in `<docs>` |
+
+Every field is required. Empty strings and arrays are deliberate edits, not requests for the default text, and there is no template syntax. `getDefaultSystemPromptBody()` returns a fresh copy of the stock wording, so the default body produces exactly the stock prompt.
+
+Pi still builds the tool list, tool rules, documentation paths, `APPEND_SYSTEM.md`, project context, skills and cwd. Changing the active tools rebuilds them with the body that is already loaded; the file is read again only on `reload()`.
+
+The resolver runs on every reload and wins over `systemPrompt`, a discovered `SYSTEM.md` and `systemPromptOverride`. Return file contents, not a path. If reading or parsing fails, the error propagates and the previous choice stays loaded; Pi never quietly switches to another source. To pick a native `SYSTEM.md` explicitly, return `{ kind: "custom", text: await readFile(path, "utf8"), source: { path } }`; it behaves exactly like a discovered one.
+
+`getSystemPrompt()` returns `undefined` for a default-body choice, `getDefaultSystemPromptBody()` returns the loaded body, and `getSystemPromptSource()` returns the declared source (optional for in-memory choices). Custom `ResourceLoader` implementations may implement `getDefaultSystemPromptBody()`; existing ones need no change. Extensions see the loaded body as `systemPromptOptions.defaultSystemPromptBody`.
+
 ## Examples
 
 | Example | Purpose |
