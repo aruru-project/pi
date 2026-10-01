@@ -16,7 +16,7 @@ const args = process.argv.slice(2);
 const candidate = args.includes("--candidate");
 const outIndex = args.indexOf("--out");
 if (args.includes("--help")) {
-	console.log("Usage: node scripts/build-dock-package.mjs --out <new-directory> [--candidate]\nBuilds the fork runtime cohort with locked inputs on Node24+. --candidate permits dirty source; never publish it.");
+	console.log("Usage: node scripts/build-dock-package.mjs --out <new-directory> [--candidate]\nBuilds the fork runtime cohort with locked inputs on Node24+. --candidate permits dirty source; never publish it.\nRun `npm run hydrate:model-data` first to create the built-in model list.");
 	process.exit(0);
 }
 if (outIndex < 0 || !args[outIndex + 1] || args.some((arg, index) => arg !== "--candidate" && arg !== "--out" && index !== outIndex + 1)) {
@@ -69,6 +69,14 @@ function sourceFingerprint() {
 	return hash(JSON.stringify(files.map((path) => [path, existsSync(join(root, path)) ? hash(readFileSync(join(root, path))) : null])));
 }
 const sourceSha256 = sourceFingerprint();
+// The built-in model list is generated data that upstream keeps out of git. Its content is not
+// important (users refresh it with `aludock update model`); the build only needs a valid copy.
+const modelDataManifest = join(root, "packages/ai/src/providers/data/.manifest.json");
+if (!existsSync(modelDataManifest)) {
+	throw new Error("The built-in model list is missing. Run `npm run hydrate:model-data` first (behind a proxy, set NODE_USE_ENV_PROXY=1).");
+}
+const modelDataBytes = readFileSync(modelDataManifest);
+const modelData = { generatedAt: JSON.parse(modelDataBytes.toString("utf8")).generatedAt, manifestSha256: hash(modelDataBytes) };
 const version = candidate ? `${config.version}.candidate.${sourceSha256.slice(0, 12)}` : config.version;
 mkdirSync(out, { recursive: true });
 const home = join(out, "home");
@@ -85,16 +93,6 @@ for (const path of run("git", ["ls-files", "--others", "--exclude-standard", "-z
 }
 writeFileSync(join(inputs, "source.patch"), patch);
 run("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { env, stdio: "inherit" });
-const dataSpec = `${config.modelData.package}@${config.upstream.version}`;
-const packOutput = JSON.parse(run("npm", ["pack", dataSpec, "--ignore-scripts", "--json", "--pack-destination", inputs], { env }));
-const dataPack = Array.isArray(packOutput) ? packOutput[0] : Object.values(packOutput)[0];
-const dataTarball = join(inputs, dataPack.filename);
-const dataIntegrity = `sha512-${createHash("sha512").update(readFileSync(dataTarball)).digest("base64")}`;
-assert.equal(dataIntegrity, config.modelData.integrity, "Model-data tarball must match the pinned release bytes");
-run("tar", ["-xf", dataTarball, "-C", inputs, "package/dist/providers/data"], { env });
-const dataPath = join(root, "packages/ai/src/providers/data");
-rmSync(dataPath, { recursive: true, force: true });
-cpSync(join(inputs, "package/dist/providers/data"), dataPath, { recursive: true });
 // Upstream build:offline also compiles development-only build prerequisites.
 // Only the manifest-derived runtime closure is packed for distribution.
 for (const directory of findPackageDirectories(join(root, "packages"))) {
@@ -125,7 +123,7 @@ const provenance = {
 	schemaVersion: 2, version, candidate, source: { repository: config.repository, commit: sourceCommit, dirty, sha256: sourceSha256 },
 	release: { tag: releaseTag, assetBase }, runtimeRoots: config.runtimeRoots,
 	upstream: config.upstream, engine: config.node,
-	inputs: { sourcePatchSha256: hash(patch), modelData: { spec: dataSpec, integrity: dataIntegrity },
+	inputs: { sourcePatchSha256: hash(patch), modelData,
 		packageLockSha256: hash(readFileSync(join(root, "package-lock.json"))),
 		upstreamShrinkwrapSha256: hash(readFileSync(join(root, "packages/coding-agent/npm-shrinkwrap.json"))) },
 	build: { node: process.version, npm: run("npm", ["--version"], { env }).trim(), platform: process.platform, arch: process.arch },
@@ -215,21 +213,24 @@ assert.equal(installedManifest.engines.node, config.node);
 assert.deepEqual(JSON.parse(readFileSync(join(installed, "dock-provenance.json"), "utf8")), { ...provenance, name });
 const probe = join(consumer, "smoke-sdk.mjs");
 writeFileSync(probe, `import assert from "node:assert/strict";
-import { createAgentSession, DefaultResourceLoader, getDefaultSystemPromptBody, parseDefaultSystemPromptBody, SessionManager, SettingsManager } from "${name}";
+import { createAgentSession, DefaultResourceLoader, getCompactionPromptTemplates, getDefaultSystemPromptBody, parseDefaultSystemPromptBody, SessionManager, SettingsManager } from "${name}";
 import { TuiMainScreen, Text } from "@earendil-works/pi-tui";
 assert.equal(typeof TuiMainScreen, "function");
 assert.equal(typeof Text, "function");
 const body = getDefaultSystemPromptBody();
 assert.equal(body.intro, "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.");
 assert.deepEqual(parseDefaultSystemPromptBody(body), body);
+const templates = getCompactionPromptTemplates();
+assert.deepEqual(Object.keys(templates).sort(), ["summarize", "system", "turnPrefix", "update"]);
+for (const text of Object.values(templates)) assert.ok(typeof text === "string" && text.length > 0);
+assert.equal(SettingsManager.inMemory().getCacheWarmingMode(), "off");
 body.intro = "Installed Dock candidate fixture.";
 const selectedThinking = [];
 const loader = new DefaultResourceLoader({ cwd: process.cwd(), agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager: SettingsManager.inMemory(), noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true, systemPromptResolver: () => ({kind: "default", body}), extensionFactories: [(pi) => { pi.on("model_select", (_event, ctx) => { selectedThinking.push(ctx.thinkingLevel); }); }] });
 await loader.reload();
 const { session } = await createAgentSession({ cwd: process.cwd(), agentDir: process.env.PI_CODING_AGENT_DIR, resourceLoader: loader, sessionManager: SessionManager.inMemory(), settingsManager: SettingsManager.inMemory() });
 try {
- assert.match(session.systemPrompt, /^Installed Dock candidate fixture\\./);
- assert.match(session.systemPrompt, /Available tools:/);
+ assert.match(session.systemPrompt, /^Installed Dock candidate fixture\\.\\n\\n<tools>\\n/);
  session.setActiveToolsByName(["read"]);
  assert.match(session.systemPrompt, /^Installed Dock candidate fixture\\./);
  assert.match(session.systemPrompt, /- read:/);
@@ -243,7 +244,7 @@ try {
  assert.deepEqual(selectedThinking, ["high"]);
  assert.equal(session.settingsManager.getDefaultThinkingLevel(), "low");
 } finally { session.dispose(); }
-console.log("Installed SDK and direct TUI share one fork cohort; default body, resolver, tool rebuild and model-selection preference passed");
+console.log("Installed SDK and direct TUI share one fork cohort; default body, resolver, tool rebuild, compaction prompts, cache warming off and model-selection preference passed");
 `);
 const sdkOutput = run(process.execPath, [probe], { cwd: consumer, env }).trim();
 const cliOutput = run(process.execPath, [join(installed, installedManifest.bin.pi), "--version"], { cwd: consumer, env }).trim();
