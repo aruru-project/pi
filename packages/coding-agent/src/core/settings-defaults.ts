@@ -58,7 +58,8 @@ export const SETTINGS_DEFAULTS = {
 		mode: "on",
 		inlineBudget: 3000,
 	},
-	cacheWarming: "streaming",
+	// Dock fork: each refresh is a paid request, so warming stays off until the user turns it on (upstream: "streaming").
+	cacheWarming: "off",
 	tuiMode: "fullscreen",
 	fullscreenExitOutput: "transcript",
 	fullscreenScrollbar: "auto",

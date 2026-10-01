@@ -411,17 +411,21 @@ describe("SettingsManager", () => {
 	});
 
 	describe("cacheWarming", () => {
-		it("defaults to streaming and ignores project settings", () => {
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("streaming");
+		// Dock fork: warming costs money, so it stays off until the user turns it on.
+		it("defaults to off and ignores project settings", () => {
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("off");
+			expect(SettingsManager.inMemory().getCacheWarmingMode()).toBe("off");
 
 			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ cacheWarming: "idle" }));
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("streaming");
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("off");
 
-			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "idle" }));
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("idle");
+			for (const mode of ["streaming", "idle"] as const) {
+				writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: mode }));
+				expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe(mode);
+			}
 
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "bogus" }));
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("streaming");
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("off");
 		});
 
 		it("persists the mode globally", async () => {
