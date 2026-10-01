@@ -38,7 +38,13 @@ import {
 	isSyntheticPath,
 	type SourceInfo,
 } from "./source-info.ts";
+import { type DefaultSystemPromptBody, parseDefaultSystemPromptBody } from "./system-prompt.ts";
 import { resetTimings } from "./timings.ts";
+
+/** An explicit prompt choice, including the file whose current contents were loaded. */
+export type SystemPromptSelection =
+	| { kind: "default"; body: DefaultSystemPromptBody; source?: { path: string } }
+	| { kind: "custom"; text: string; source?: { path: string } };
 
 export interface ResourceExtensionPaths {
 	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;
@@ -158,6 +164,8 @@ export interface ResourceLoader {
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
 	getSystemPrompt(): string | undefined;
 	getSystemPromptSource(): { path: string } | undefined;
+	/** Optional so existing custom ResourceLoader implementations keep working. */
+	getDefaultSystemPromptBody?(): DefaultSystemPromptBody | undefined;
 	getAppendSystemPrompt(): string[];
 	getAppendSystemPromptSources(): Array<{ path: string }>;
 	extendResources(paths: ResourceExtensionPaths): void;
@@ -291,6 +299,11 @@ export interface DefaultResourceLoaderOptions {
 	noThemes?: boolean;
 	noContextFiles?: boolean;
 	systemPrompt?: string;
+	/**
+	 * Authoritative system prompt choice, called on every reload. Wins over systemPrompt, discovered
+	 * SYSTEM.md and systemPromptOverride. Errors propagate instead of falling back to another source.
+	 */
+	systemPromptResolver?: () => SystemPromptSelection | Promise<SystemPromptSelection>;
 	appendSystemPrompt?: string[];
 	extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
 	skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
@@ -331,6 +344,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private noThemes: boolean;
 	private noContextFiles: boolean;
 	private systemPromptSource?: string;
+	private systemPromptResolver?: DefaultResourceLoaderOptions["systemPromptResolver"];
 	private appendSystemPromptSource?: string[];
 	private extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
 	private skillsOverride?: (base: { skills: Skill[]; diagnostics: ResourceDiagnostic[] }) => {
@@ -361,6 +375,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private agentsFiles: Array<{ path: string; content: string }>;
 	private systemPrompt?: string;
 	private systemPromptSourcePath?: string;
+	private defaultSystemPromptBody?: DefaultSystemPromptBody;
 	private appendSystemPrompt: string[];
 	private appendSystemPromptSourcePaths: string[];
 	private lastSkillPaths: string[];
@@ -397,6 +412,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.noThemes = options.noThemes ?? false;
 		this.noContextFiles = options.noContextFiles ?? false;
 		this.systemPromptSource = options.systemPrompt;
+		this.systemPromptResolver = options.systemPromptResolver;
 		this.appendSystemPromptSource = options.appendSystemPrompt;
 		this.extensionsOverride = options.extensionsOverride;
 		this.skillsOverride = options.skillsOverride;
@@ -452,6 +468,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getSystemPromptSource(): { path: string } | undefined {
 		return this.systemPromptSourcePath ? { path: this.systemPromptSourcePath } : undefined;
+	}
+
+	getDefaultSystemPromptBody(): DefaultSystemPromptBody | undefined {
+		return this.defaultSystemPromptBody;
 	}
 
 	getAppendSystemPrompt(): string[] {
@@ -654,11 +674,21 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
 
-		const systemPromptSource = this.systemPromptSource ?? this.discoverSystemPromptFile();
-		const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");
-		this.systemPrompt = this.systemPromptOverride ? this.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
-		this.systemPromptSourcePath =
-			systemPromptSource && existsSync(systemPromptSource) ? resolvePath(systemPromptSource) : undefined;
+		if (this.systemPromptResolver) {
+			const selection = await this.systemPromptResolver();
+			const body = selection.kind === "default" ? parseDefaultSystemPromptBody(selection.body) : undefined;
+			const sourcePath = selection.source ? resolvePath(selection.source.path) : undefined;
+			// Resolve and validate before replacing either the loaded prose or its source.
+			this.systemPrompt = selection.kind === "custom" ? selection.text : undefined;
+			this.defaultSystemPromptBody = body;
+			this.systemPromptSourcePath = sourcePath;
+		} else {
+			const systemPromptSource = this.systemPromptSource ?? this.discoverSystemPromptFile();
+			const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");
+			this.systemPrompt = this.systemPromptOverride ? this.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
+			this.systemPromptSourcePath =
+				systemPromptSource && existsSync(systemPromptSource) ? resolvePath(systemPromptSource) : undefined;
+		}
 
 		let appendSources = this.appendSystemPromptSource;
 		if (!appendSources) {
