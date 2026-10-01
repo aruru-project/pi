@@ -27,7 +27,7 @@ test("CLI help and invalid arguments never start installation", (t) => {
 
 test("normal manifest/out arguments reject old candidate or v* release before any install", (t) => {
 	const cwd = temporary(t);
-	const manifest = { schemaVersion: 2, candidate: true };
+	const manifest = { schemaVersion: 3, candidate: true };
 	const manifestPath = join(cwd, "manifest.json");
 	const out = join(cwd, "output");
 	const run = () => spawnSync(process.execPath, [script, "--manifest", manifestPath, "--out", out], { cwd, env: isolatedEnvironment(cwd), encoding: "utf8" });

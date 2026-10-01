@@ -29,7 +29,7 @@ assert.ok(!existsSync(out) && !within(realpathSync(root), join(realpathSync(dirn
 const manifestBytes = readFileSync(resolve(options.get("--manifest")));
 const manifest = JSON.parse(manifestBytes);
 const { artifacts: artifactList, validation: _developmentValidation, ...provenance } = manifest;
-assert.equal(provenance.schemaVersion, 2);
+assert.equal(provenance.schemaVersion, 3);
 assert.equal(provenance.candidate, false, "Candidates are development evidence, not releases");
 assert.equal(provenance.source.dirty, false, "Release source must be clean");
 assert.match(provenance.source.commit, /^[a-f0-9]{40}$/);
@@ -65,6 +65,11 @@ function visit(name) {
 }
 for (const name of provenance.runtimeRoots) visit(name);
 assert.equal(visited.size, artifacts.size, "Manifest includes unused Pi packages");
+// The release carries no shrinkwrap; differences are reported against the build's installer lock.
+const buildLock = spawnSync("git", ["show", `${provenance.source.commit}:packages/coding-agent/install-lock/package-lock.json`], { cwd: root, encoding: "buffer", maxBuffer: 32 * 1024 * 1024 });
+assert.equal(buildLock.status, 0, `Release source commit is not available locally: ${provenance.source.commit}`);
+assert.equal(createHash("sha256").update(buildLock.stdout).digest("hex"), provenance.inputs.installLockSha256, "Installer lock does not match the release build");
+const buildLockPackages = JSON.parse(buildLock.stdout.toString("utf8")).packages;
 mkdirSync(out);
 const home = join(out, "home");
 const consumer = join(out, "consumer");
@@ -95,16 +100,7 @@ const phases = [];
 for (const command of ["install", "ci"]) {
 	if (command === "install") assert.ok(!existsSync(join(consumer, "package-lock.json")), "Do not seed the consumer lock");
 	run("npm", [command, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
-	const shrinkwrap = JSON.parse(readFileSync(join(consumer, "node_modules", sdk, "npm-shrinkwrap.json"), "utf8"));
-	assert.equal(shrinkwrap.version, provenance.version);
-	for (const [path, record] of Object.entries(shrinkwrap.packages)) {
-		const artifact = artifacts.get(path.split("node_modules/").at(-1));
-		if (artifact) {
-			assert.equal(record.version, artifact.version, path);
-			assert.equal(record.resolved, artifact.url, path);
-			assert.equal(record.integrity, artifact.integrity, path);
-		}
-	}
+	assert.ok(!existsSync(join(consumer, "node_modules", sdk, "npm-shrinkwrap.json")), "Releases do not ship a shrinkwrap");
 	const installedPackages = inspectInstalledCohort({ consumer, provenance, artifacts, resolvedFor: (artifact) => artifact.url });
 	inspectCohortResolutions({ consumer, installedPackages, artifacts, runtimeRoots: provenance.runtimeRoots, env });
 	const imports = run(process.execPath, [probe]);
@@ -114,7 +110,7 @@ for (const command of ["install", "ci"]) {
 	const thirdPartyDifferencesFromBuild = Object.entries(JSON.parse(lockBytes).packages).flatMap(([path, record]) => {
 		if (!path || artifacts.has(path.split("node_modules/").at(-1))) return [];
 		const name = path.split("node_modules/").at(-1);
-		const buildRecords = Object.entries(shrinkwrap.packages).filter(([p]) => p.split("node_modules/").at(-1) === name).map(([, value]) => value);
+		const buildRecords = Object.entries(buildLockPackages).filter(([p]) => p.split("node_modules/").at(-1) === name).map(([, value]) => value);
 		return buildRecords.some((value) => value.version === record.version && value.resolved === record.resolved && value.integrity === record.integrity)
 			? [] : [{ path, version: record.version, buildVersions: [...new Set(buildRecords.map((value) => value.version))] }];
 	});
