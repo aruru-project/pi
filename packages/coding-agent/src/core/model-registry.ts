@@ -140,7 +140,7 @@ export class ModelRegistry {
 		context: Context,
 		options?: ModelsApiStreamOptions<TApi>,
 	): AssistantMessageEventStream {
-		return this.runtime.stream(model, context, options);
+		return this.consumer.stream(model, context, options);
 	}
 
 	/** Stream with provider-neutral options and request-time authentication. */
@@ -153,7 +153,7 @@ export class ModelRegistry {
 		context: Context,
 		options?: ModelsApiStreamOptions<TApi>,
 	): Promise<AssistantMessage> {
-		return this.runtime.complete(model, context, options);
+		return this.consumer.stream(model, context, options).result();
 	}
 
 	/** Every known model of a type (chat, image, classifier), optionally for one provider. */

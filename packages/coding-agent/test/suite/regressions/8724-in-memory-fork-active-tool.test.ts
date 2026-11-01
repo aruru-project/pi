@@ -44,6 +44,12 @@ describe("regression #8724: in-memory fork during an active tool turn", () => {
 			cwd: harness.tempDir,
 			agentDir: harness.tempDir,
 			modelRuntime: harness.session.modelRuntime,
+			models: harness.session.modelRuntime,
+			modelExecution: { modelRuntime: harness.session.modelRuntime },
+			refreshModels: async () => {
+				await harness.session.modelRuntime.refresh({ allowNetwork: false });
+			},
+			getModelError: () => harness.session.modelRuntime.getError(),
 			settingsManager: harness.settingsManager,
 			resourceLoader: harness.session.resourceLoader,
 			diagnostics: [],
