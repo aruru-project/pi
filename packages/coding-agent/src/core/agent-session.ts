@@ -115,6 +115,7 @@ import {
 import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { createToolNameMatcher, isMcpToolName } from "./mcp-servers.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
+import { type ModelConsumer, requireLocalModelRuntime } from "./model-consumer.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { NestedToolCallRunner } from "./nested-tool-calls.ts";
@@ -261,7 +262,8 @@ export interface AgentSessionConfig {
 	/** SDK custom tools registered outside extensions */
 	customTools?: ToolDefinition[];
 	/** Canonical model/auth runtime used by coding-agent internals. */
-	modelRuntime: ModelRuntime;
+	modelRuntime?: ModelRuntime;
+	modelConsumer?: ModelConsumer;
 	/** Keeps the prompt cache entry of the last session request warm. */
 	cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
@@ -477,7 +479,8 @@ export class AgentSession {
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
 
-	private _modelRuntime: ModelRuntime;
+	private _modelRuntime: ModelRuntime | undefined;
+	private readonly _models: ModelConsumer;
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
 
 	// Tool registry for extension getTools/setTools
@@ -503,6 +506,9 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		const models = config.modelConsumer ?? config.modelRuntime;
+		if (!models) throw new Error("AgentSession requires model execution");
+		this._models = models;
 		this._cacheWarmer = config.cacheWarmer;
 		if (this._cacheWarmer) {
 			this._cacheWarmer.onWarmed = (entry) => this._emit({ type: "entry_appended", entry });
@@ -539,7 +545,7 @@ export class AgentSession {
 	}
 
 	get modelRuntime(): ModelRuntime {
-		return this._modelRuntime;
+		return requireLocalModelRuntime(this._modelRuntime);
 	}
 
 	private async _getRequiredRequestAuth(
@@ -553,7 +559,7 @@ export class AgentSession {
 	}> {
 		let result: AuthResult | undefined;
 		try {
-			result = await this._modelRuntime.getAuth(model, { signal });
+			result = await this.modelRuntime.getAuth(model, { signal });
 		} catch (error) {
 			const cause = error instanceof Error ? error.cause : undefined;
 			if (cause instanceof Error && cause.message === "authHeader requires a resolved API key") {
@@ -571,7 +577,7 @@ export class AgentSession {
 			};
 		}
 
-		const isOAuth = this._modelRuntime.isUsingOAuth(model.provider);
+		const isOAuth = this._models.isUsingOAuth(model.provider);
 		if (isOAuth) {
 			throw new Error(
 				`Authentication failed for "${model.provider}". ` +
@@ -594,18 +600,19 @@ export class AgentSession {
 	}> {
 		// Route a virtual model first: summaries size their input and output from the model they get.
 		const { model, thinkingLevel } = isVirtualModel(selectedModel)
-			? await this._modelRuntime.resolveModel(selectedModel, convertToLlm(this.messages), {
+			? await this._models.resolveModel(selectedModel, convertToLlm(this.messages), {
 					reason: "direct",
 					thinkingLevel: this.thinkingLevel,
 					signal,
 				})
 			: { model: selectedModel, thinkingLevel: this.thinkingLevel };
+		if (!this._modelRuntime) return { model, thinkingLevel };
 		if (this.agent.streamFunction === streamSimple) {
 			return { ...(await this._getRequiredRequestAuth(model, signal)), thinkingLevel };
 		}
 
 		try {
-			const result = await this._modelRuntime.getAuth(model, { signal });
+			const result = await this.modelRuntime.getAuth(model, { signal });
 			if (!result) return { model, thinkingLevel };
 			const requestModel = result.auth.baseUrl ? { ...model, baseUrl: result.auth.baseUrl } : model;
 			return {
@@ -627,7 +634,7 @@ export class AgentSession {
 	 */
 	private _modelForMessage(message: AssistantMessage): Model<any> | undefined {
 		const model = this.model;
-		if (model && isVirtualModel(model)) return this._modelRuntime.getPhysicalModel(message.provider, message.model);
+		if (model && isVirtualModel(model)) return this._models.getPhysicalModel(message.provider, message.model);
 		return model?.provider === message.provider && model.id === message.model ? model : undefined;
 	}
 
@@ -641,7 +648,7 @@ export class AgentSession {
 	private _recordSelection(): void {
 		const model = this.model;
 		if (!model) return;
-		const getModel = (provider: string, modelId: string) => this._modelRuntime.getModel(provider, modelId);
+		const getModel = (provider: string, modelId: string) => this._models.getModel(provider, modelId);
 		const recorded = getBranchSelection(this.sessionManager.getBranch(), getModel);
 		if (!recorded || (recorded.provider === model.provider && recorded.modelId === model.id)) return;
 		const recordedModel = getModel(recorded.provider, recorded.modelId);
@@ -832,7 +839,7 @@ export class AgentSession {
 			const lastResponse = context.messages.findLastIndex((message) => message.role === "assistant");
 			const userTurn = context.messages.slice(lastResponse + 1).some((message) => message.role === "user");
 			const state = getVirtualModelState(this.sessionManager.getBranch(), model.provider, model.id);
-			const route = await this._modelRuntime.resolveModel(model, convertToLlm(context.messages), {
+			const route = await this._models.resolveModel(model, convertToLlm(context.messages), {
 				reason: failed ? "retry" : userTurn ? "user" : "continuation",
 				thinkingLevel,
 				signal,
@@ -1468,7 +1475,7 @@ export class AgentSession {
 	get routedModel(): { model: Model<any>; thinkingLevel?: ThinkingLevel } | undefined {
 		if (!this.model || !isVirtualModel(this.model)) return undefined;
 		const latest = findLatestResponse(this.agent.state.messages);
-		const model = latest && this._modelRuntime.getPhysicalModel(latest.provider, latest.model);
+		const model = latest && this._models.getPhysicalModel(latest.provider, latest.model);
 		return model && { model, thinkingLevel: latest?.thinkingLevel };
 	}
 
@@ -2134,10 +2141,10 @@ export class AgentSession {
 		}
 
 		const hasConfiguredAuth =
-			this._modelRuntime.hasConfiguredAuth(this.model.provider) ||
-			(await this._modelRuntime.checkAuth(this.model.provider)) !== undefined;
+			this._models.hasConfiguredAuth(this.model.provider) ||
+			(await this._models.checkAuth(this.model.provider)) !== undefined;
 		if (!hasConfiguredAuth) {
-			const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
+			const isOAuth = this._models.isUsingOAuth(this.model.provider);
 			if (isOAuth) {
 				throw new Error(
 					`Authentication failed for "${this.model.provider}". ` +
@@ -2526,7 +2533,7 @@ export class AgentSession {
 		options: Pick<ModelSelectionOptions, "preserveThinkingLevel">,
 		intent: ModelMutationIntent,
 	): Promise<void> {
-		if (!(await this._modelRuntime.checkAuth(model.provider))) {
+		if (!(await this._models.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
 
@@ -2585,7 +2592,7 @@ export class AgentSession {
 		options: ModelMutationOptions,
 	): Promise<ModelCycleResult | undefined> {
 		const availableIds = new Set(
-			this._modelRuntime.getAvailableSnapshot().map((model) => `${model.provider}\0${model.id}`),
+			this._models.getAvailableSnapshot().map((model) => `${model.provider}\0${model.id}`),
 		);
 		const scopedModels = this._scopedModels.filter((scoped) =>
 			availableIds.has(`${scoped.model.provider}\0${scoped.model.id}`),
@@ -2625,7 +2632,7 @@ export class AgentSession {
 		direction: "forward" | "backward",
 		options: ModelMutationOptions,
 	): Promise<ModelCycleResult | undefined> {
-		const availableModels = this._modelRuntime.getAvailableSnapshot();
+		const availableModels = this._models.getAvailableSnapshot();
 		if (availableModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
@@ -3411,7 +3418,7 @@ export class AgentSession {
 			return;
 		}
 
-		const refreshedModel = this._modelRuntime.getModel(currentModel.provider, currentModel.id);
+		const refreshedModel = this._models.getModel(currentModel.provider, currentModel.id);
 		if (!refreshedModel || refreshedModel === currentModel) {
 			return;
 		}
@@ -3488,7 +3495,7 @@ export class AgentSession {
 				refreshTools: () => this._refreshToolRegistry(),
 				getCommands,
 				setModel: async (model) => {
-					if (!this._modelRuntime.hasConfiguredAuth(model.provider)) return false;
+					if (!this._models.hasConfiguredAuth(model.provider)) return false;
 					await this._setModel(
 						model,
 						{ preserveThinkingLevel: this._extensionModelMutationPolicy === "legacy-defaults" },
@@ -3535,23 +3542,23 @@ export class AgentSession {
 			},
 			{
 				registerProvider: (name, config) => {
-					this._modelRuntime.registerProvider(name, config);
+					this.modelRuntime.registerProvider(name, config);
 					this._refreshCurrentModelFromRegistry();
 				},
 				registerNativeProvider: (provider) => {
-					this._modelRuntime.registerNativeProvider(provider);
+					this.modelRuntime.registerNativeProvider(provider);
 					this._refreshCurrentModelFromRegistry();
 				},
 				unregisterProvider: (name) => {
-					this._modelRuntime.unregisterProvider(name);
+					this.modelRuntime.unregisterProvider(name);
 					this._refreshCurrentModelFromRegistry();
 				},
 				registerVirtualModel: (definition) => {
-					this._modelRuntime.registerVirtualModel(definition);
+					this.modelRuntime.registerVirtualModel(definition);
 					this._refreshCurrentModelFromRegistry();
 				},
 				unregisterVirtualModel: (provider, id) => {
-					this._modelRuntime.unregisterVirtualModel(provider, id);
+					this.modelRuntime.unregisterVirtualModel(provider, id);
 					this._refreshCurrentModelFromRegistry();
 				},
 			},
@@ -3705,7 +3712,7 @@ export class AgentSession {
 			extensionsResult.runtime,
 			this._cwd,
 			this.sessionManager,
-			new ModelRegistry(this._modelRuntime),
+			new ModelRegistry(this._modelRuntime, this._models),
 		);
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
