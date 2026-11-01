@@ -222,6 +222,7 @@ export {
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export type { RegisteredMcpServer } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
+export type { ModelCatalog, ModelConsumer } from "./core/model-consumer.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
 export {
 	type ModelScopeDiagnostic,

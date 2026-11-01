@@ -547,7 +547,7 @@ export async function findInitialModel(options: {
 	defaultModelId?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	modelThinkingLevels?: Record<string, ThinkingLevel>;
-	modelRuntime: ModelRuntime;
+	modelRuntime: Pick<ModelRuntime, "getModel" | "hasConfiguredAuth" | "getAvailableSnapshot">;
 }): Promise<InitialModelResult> {
 	const {
 		scopedModels,

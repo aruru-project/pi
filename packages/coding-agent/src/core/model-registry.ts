@@ -25,6 +25,7 @@ import type {
 	Provider,
 	ProviderHeaders,
 } from "@earendil-works/pi-ai";
+import { type ModelConsumer, requireLocalModelRuntime } from "./model-consumer.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer.ts";
 import type { VirtualModelDefinition } from "./virtual-models.ts";
@@ -46,10 +47,18 @@ export { clearApiKeyCache } from "./provider-composer.ts";
  * Coding-agent internals use ModelRuntime directly.
  */
 export class ModelRegistry {
-	private readonly runtime: ModelRuntime;
+	private readonly localRuntime: ModelRuntime | undefined;
+	private readonly consumer: ModelConsumer;
 
-	constructor(runtime: ModelRuntime) {
-		this.runtime = runtime;
+	constructor(runtime: ModelRuntime | undefined, consumer?: ModelConsumer) {
+		this.localRuntime = runtime;
+		const models = consumer ?? runtime;
+		if (!models) throw new Error("ModelRegistry requires model execution");
+		this.consumer = models;
+	}
+
+	private get runtime(): ModelRuntime {
+		return requireLocalModelRuntime(this.localRuntime);
 	}
 
 	/** Reload models.json asynchronously. Await before making synchronous registry reads. */
@@ -62,15 +71,15 @@ export class ModelRegistry {
 	}
 
 	getAll(): Model<Api>[] {
-		return [...this.runtime.getModels()];
+		return [...this.consumer.getModels()];
 	}
 
 	getAvailable(): Model<Api>[] {
-		return [...this.runtime.getAvailableSnapshot()];
+		return [...this.consumer.getAvailableSnapshot()];
 	}
 
 	find(provider: string, modelId: string): Model<Api> | undefined {
-		return this.runtime.getModel(provider, modelId);
+		return this.consumer.getModel(provider, modelId);
 	}
 
 	/** Find a model of a non-chat type, e.g. `findOfType("classifier", "typesafe", "jev-latest")`. */
@@ -83,7 +92,7 @@ export class ModelRegistry {
 	}
 
 	hasConfiguredAuth(model: Model<Api>): boolean {
-		return this.runtime.hasConfiguredAuth(model.provider);
+		return this.consumer.hasConfiguredAuth(model.provider);
 	}
 
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
@@ -136,7 +145,7 @@ export class ModelRegistry {
 
 	/** Stream with provider-neutral options and request-time authentication. */
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
-		return this.runtime.streamSimple(model, context, options);
+		return this.consumer.streamSimple(model, context, options);
 	}
 
 	complete<TApi extends Api>(
@@ -196,15 +205,16 @@ export class ModelRegistry {
 	}
 
 	async getApiKeyForProvider(provider: string): Promise<string | undefined> {
+		const runtime = this.runtime;
 		try {
-			return (await this.runtime.getAuth(provider))?.auth.apiKey;
+			return (await runtime.getAuth(provider))?.auth.apiKey;
 		} catch {
 			return undefined;
 		}
 	}
 
 	isUsingOAuth(model: Model<Api>): boolean {
-		return this.runtime.isUsingOAuth(model.provider);
+		return this.consumer.isUsingOAuth(model.provider);
 	}
 
 	registerProvider(provider: Provider): void;
