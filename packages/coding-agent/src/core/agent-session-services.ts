@@ -4,6 +4,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import { type ModelConsumer, requireLocalModelRuntime } from "./model-consumer.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import {
 	DefaultResourceLoader,
@@ -39,6 +40,9 @@ export interface CreateAgentSessionServicesOptions {
 	agentDir?: string;
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
+	modelConsumer?: ModelConsumer;
+	/** Refresh an external catalog snapshot without transferring provider ownership. */
+	refreshModelConsumer?: () => Promise<void>;
 	modelRuntimeSignal?: AbortSignal;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
@@ -75,7 +79,13 @@ export interface CreateAgentSessionFromServicesOptions {
 export interface AgentSessionServices {
 	cwd: string;
 	agentDir: string;
+	/** Local management only; throws when services use an external consumer. */
 	modelRuntime: ModelRuntime;
+	models: ModelConsumer;
+	refreshModels(): Promise<void>;
+	getModelError(): string | undefined;
+	/** Execution selection forwarded without invoking the management getter. */
+	modelExecution: Pick<CreateAgentSessionOptions, "modelRuntime" | "modelConsumer">;
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
@@ -139,13 +149,15 @@ export async function createAgentSessionServices(
 ): Promise<AgentSessionServices> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
-	const modelRuntime =
-		options.modelRuntime ??
-		(await ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
-			signal: options.modelRuntimeSignal,
-		}));
+	if (options.modelRuntime && options.modelConsumer) throw new Error("Choose modelRuntime or modelConsumer, not both");
+	const modelRuntime = options.modelConsumer
+		? undefined
+		: (options.modelRuntime ??
+			(await ModelRuntime.create({
+				authPath: join(agentDir, "auth.json"),
+				modelsPath: join(agentDir, "models.json"),
+				signal: options.modelRuntimeSignal,
+			})));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
@@ -159,7 +171,7 @@ export async function createAgentSessionServices(
 	const extensionsResult = resourceLoader.getExtensions();
 	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
-			modelRuntime.registerProvider(name, config);
+			requireLocalModelRuntime(modelRuntime).registerProvider(name, config);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({
@@ -171,7 +183,7 @@ export async function createAgentSessionServices(
 	extensionsResult.runtime.pendingProviderRegistrations = [];
 	for (const { provider, extensionPath } of extensionsResult.runtime.pendingNativeProviderRegistrations) {
 		try {
-			modelRuntime.registerNativeProvider(provider);
+			requireLocalModelRuntime(modelRuntime).registerNativeProvider(provider);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({
@@ -183,7 +195,7 @@ export async function createAgentSessionServices(
 	extensionsResult.runtime.pendingNativeProviderRegistrations = [];
 	for (const { definition, extensionPath } of extensionsResult.runtime.pendingVirtualModelRegistrations) {
 		try {
-			modelRuntime.registerVirtualModel(definition);
+			requireLocalModelRuntime(modelRuntime).registerVirtualModel(definition);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({
@@ -193,13 +205,24 @@ export async function createAgentSessionServices(
 		}
 	}
 	extensionsResult.runtime.pendingVirtualModelRegistrations = [];
-	await modelRuntime.refresh({ allowNetwork: false });
+	const models = options.modelConsumer ?? requireLocalModelRuntime(modelRuntime);
+	const refreshModels = async () => {
+		if (modelRuntime) await modelRuntime.refresh({ allowNetwork: false });
+		else await options.refreshModelConsumer?.();
+	};
+	await refreshModels();
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
 
 	return {
 		cwd,
 		agentDir,
-		modelRuntime,
+		get modelRuntime() {
+			return requireLocalModelRuntime(modelRuntime);
+		},
+		models,
+		modelExecution: modelRuntime ? { modelRuntime } : { modelConsumer: models },
+		refreshModels,
+		getModelError: () => modelRuntime?.getError(),
 		settingsManager,
 		resourceLoader,
 		diagnostics,
@@ -219,7 +242,7 @@ export async function createAgentSessionFromServices(
 	return createAgentSession({
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
-		modelRuntime: options.services.modelRuntime,
+		...options.services.modelExecution,
 		settingsManager: options.services.settingsManager,
 		resourceLoader: options.services.resourceLoader,
 		sessionManager: options.sessionManager,
