@@ -83,6 +83,8 @@ export interface AgentSessionServices {
 	modelRuntime: ModelRuntime;
 	models: ModelConsumer;
 	refreshModels(): Promise<void>;
+	/** Read current availability, including credential changes made by another process. */
+	getAvailableModels(): ReturnType<ModelRuntime["getAvailable"]>;
 	getModelError(): string | undefined;
 	/** Execution selection forwarded without invoking the management getter. */
 	modelExecution: Pick<CreateAgentSessionOptions, "modelRuntime" | "modelConsumer">;
@@ -222,6 +224,11 @@ export async function createAgentSessionServices(
 		models,
 		modelExecution: modelRuntime ? { modelRuntime } : { modelConsumer: models },
 		refreshModels,
+		getAvailableModels: async () => {
+			if (modelRuntime) return modelRuntime.getAvailable();
+			await refreshModels();
+			return models.getAvailableSnapshot();
+		},
 		getModelError: () => modelRuntime?.getError(),
 		settingsManager,
 		resourceLoader,
