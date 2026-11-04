@@ -16,8 +16,10 @@ export type ModelCatalog = Pick<
 /** The operations the session loop consumes, independent of where providers execute.
  * Types are selected from the canonical implementation to avoid duplicating Pi's model DTOs.
  * Management and provider callbacks are not remote operations on this interface.
+ * getAuth and getRequestAuth are the only ways an extension obtains a credential to call a model itself.
  */
-export type ModelConsumer = ModelCatalog & Pick<ModelRuntime, "stream" | "streamSimple" | "resolveModel">;
+export type ModelConsumer = ModelCatalog &
+	Pick<ModelRuntime, "stream" | "streamSimple" | "resolveModel" | "getAuth" | "getRequestAuth">;
 
 export function requireLocalModelRuntime(runtime: ModelRuntime | undefined): ModelRuntime {
 	if (!runtime)

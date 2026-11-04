@@ -23,23 +23,14 @@ import type {
 	ModelType,
 	ModelTypeMap,
 	Provider,
-	ProviderHeaders,
 } from "@earendil-works/pi-ai";
 import { type ModelConsumer, requireLocalModelRuntime } from "./model-consumer.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
+import type { ModelRuntime, ResolvedRequestAuth } from "./model-runtime.ts";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer.ts";
 import type { VirtualModelDefinition } from "./virtual-models.ts";
 
+export type { ResolvedRequestAuth } from "./model-runtime.ts";
 export type { ProviderConfigInput } from "./provider-composer.ts";
-export type ResolvedRequestAuth =
-	| {
-			ok: true;
-			apiKey?: string;
-			headers?: ProviderHeaders;
-			baseUrl?: string;
-			env?: Record<string, string>;
-	  }
-	| { ok: false; error: string };
 export { clearApiKeyCache } from "./provider-composer.ts";
 
 /**
@@ -67,7 +58,7 @@ export class ModelRegistry {
 	}
 
 	getError(): string | undefined {
-		return this.runtime.getError();
+		return this.consumer.getError();
 	}
 
 	getAll(): Model<Api>[] {
@@ -96,34 +87,7 @@ export class ModelRegistry {
 	}
 
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
-		try {
-			const resolution = await this.runtime.getAuth(model);
-			if (!resolution) {
-				const compatibility = this.runtime.getCompatibilityRequestConfig(model);
-				if (compatibility.authHeader) {
-					return { ok: false, error: `No API key found for "${model.provider}"` };
-				}
-				return { ok: true, headers: compatibility.headers };
-			}
-			return {
-				ok: true,
-				apiKey: resolution.auth.apiKey,
-				headers: resolution.auth.headers,
-				...(resolution.auth.baseUrl ? { baseUrl: resolution.auth.baseUrl } : {}),
-				env: resolution.env,
-			};
-		} catch (error) {
-			const cause = error instanceof Error ? error.cause : undefined;
-			const message =
-				cause instanceof Error ? cause.message : error instanceof Error ? error.message : String(error);
-			return {
-				ok: false,
-				error:
-					message === "authHeader requires a resolved API key"
-						? `No API key found for "${model.provider}"`
-						: message,
-			};
-		}
+		return this.consumer.getRequestAuth(model);
 	}
 
 	getProviderAuthStatus(provider: string): AuthStatus {
@@ -201,13 +165,12 @@ export class ModelRegistry {
 	}
 
 	getProviderAuth(provider: string): Promise<AuthResult | undefined> {
-		return this.runtime.getAuth(provider);
+		return this.consumer.getAuth(provider);
 	}
 
 	async getApiKeyForProvider(provider: string): Promise<string | undefined> {
-		const runtime = this.runtime;
 		try {
-			return (await runtime.getAuth(provider))?.auth.apiKey;
+			return (await this.consumer.getAuth(provider))?.auth.apiKey;
 		} catch {
 			return undefined;
 		}
