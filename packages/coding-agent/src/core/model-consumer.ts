@@ -10,6 +10,7 @@ export type ModelCatalog = Pick<
 	| "hasConfiguredAuth"
 	| "checkAuth"
 	| "isUsingOAuth"
+	| "getError"
 >;
 
 /** The operations the session loop consumes, independent of where providers execute.

@@ -240,7 +240,7 @@ export async function createAgentSessionServices(
 			await refreshModels();
 			return models.getAvailableSnapshot();
 		},
-		getModelError: () => modelRuntime?.getError(),
+		getModelError: () => models.getError(),
 		settingsManager,
 		resourceLoader,
 		diagnostics,
