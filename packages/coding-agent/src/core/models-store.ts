@@ -41,6 +41,12 @@ export class InMemoryCodingAgentModelsStore implements ModelsStore {
 		options?.signal?.throwIfAborted();
 		this.entries.delete(providerId);
 	}
+
+	/** Replace every entry, as when adopting catalogs stored by another process. */
+	replace(entries: Readonly<Record<string, ModelsStoreEntry>>): void {
+		this.entries.clear();
+		for (const [providerId, entry] of Object.entries(entries)) this.entries.set(providerId, structuredClone(entry));
+	}
 }
 
 /** Locked JSON-backed storage for dynamically refreshed provider catalogs. */

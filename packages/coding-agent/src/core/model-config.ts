@@ -135,13 +135,19 @@ export class ModelConfig {
 			);
 		}
 
+		return ModelConfig.fromContent(content, `File: ${path}`);
+	}
+
+	/** Parse models.json contents read elsewhere; `source` names them in errors. */
+	static fromContent(content: string | undefined, source: string): ModelConfig {
+		if (content === undefined) return new ModelConfig(new Map());
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(stripJsonComments(stripBom(content)));
 		} catch (error) {
 			return new ModelConfig(
 				new Map(),
-				`Failed to parse models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${path}`,
+				`Failed to parse models.json: ${error instanceof Error ? error.message : error}\n\n${source}`,
 			);
 		}
 
@@ -151,7 +157,7 @@ export class ModelConfig {
 					.Errors(parsed)
 					.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
 					.join("\n") || "Unknown schema error";
-			return new ModelConfig(new Map(), `Invalid models.json schema:\n${errors}\n\nFile: ${path}`);
+			return new ModelConfig(new Map(), `Invalid models.json schema:\n${errors}\n\n${source}`);
 		}
 
 		const providers = new Map<string, ModelsJsonProvider>();
