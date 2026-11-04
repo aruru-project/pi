@@ -80,6 +80,7 @@ import {
 	type ProviderConfigInput,
 	resolveCompatibilityRequestConfig,
 	resolveConfiguredModelHeaders,
+	resolveExtensionHeaders,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
 import { withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
@@ -223,7 +224,16 @@ export class ModelRuntime implements Models {
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
-		this.owned = owner ? new OwnedAuth(owner, this.models) : undefined;
+		this.owned = owner
+			? new OwnedAuth(
+					owner,
+					this.models,
+					(providerId) =>
+						this.extensionProviders.has(providerId) ||
+						this.nativeExtensionProviders.has(providerId) ||
+						this.virtualModels.has(providerId),
+				)
+			: undefined;
 		this.ownerStore = owner ? (modelsStore as InMemoryCodingAgentModelsStore) : undefined;
 		this.auth = this.owned ?? this.models;
 		this.rebuildProviders();
@@ -574,6 +584,8 @@ export class ModelRuntime implements Models {
 
 	/** @internal Compatibility fallback for ModelRegistry when provider auth is unconfigured. */
 	getCompatibilityRequestConfig(model: Model<Api>): CompatibilityRequestConfig {
+		// The owner had no credential for it; its configured headers must not be resolved here.
+		if (this.owned?.owns(model.provider)) return { authHeader: true };
 		return resolveCompatibilityRequestConfig(
 			model,
 			this.config.getProvider(model.provider),
@@ -600,8 +612,21 @@ export class ModelRuntime implements Models {
 		overrides: ModelRuntimeAuthOverrides = {},
 	): Promise<AuthResult | undefined> {
 		const providerId = typeof providerOrModel === "string" ? providerOrModel : providerOrModel.provider;
-		// The owner resolves its own configured headers, so none are resolved here.
-		if (this.owned?.owns(providerId)) return this.owned.owner.getAuth(providerOrModel, overrides);
+		if (this.owned?.owns(providerId)) {
+			// The owner resolves its credential and its configured headers; this runtime adds only
+			// the headers its own extensions register for the provider.
+			const resolution = await this.owned.owner.getAuth(providerOrModel, overrides);
+			const extension = this.extensionProviders.get(providerId);
+			if (!resolution || !extension) return resolution;
+			const extensionHeaders = resolveExtensionHeaders(providerOrModel, extension, {
+				...(resolution.env ?? {}),
+				...(overrides.env ?? {}),
+			});
+			return {
+				...resolution,
+				auth: { ...resolution.auth, headers: mergeHeaders(resolution.auth.headers, extensionHeaders) },
+			};
+		}
 		if (typeof providerOrModel === "string") return this.models.getAuth(providerOrModel, overrides);
 		const resolution = await this.models.getAuth(providerOrModel, overrides);
 		if (!resolution) return undefined;
@@ -690,6 +715,13 @@ export class ModelRuntime implements Models {
 	}
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
+		if (this.owned?.owns(providerId)) {
+			const check = this.snapshot.auth.get(providerId);
+			if (!check) return { configured: false };
+			return this.snapshot.storedProviders.has(providerId)
+				? { configured: true, source: "stored" }
+				: { configured: true, source: "environment", label: check.source };
+		}
 		if (this.credentials.hasRuntimeApiKey(providerId)) return { configured: true, source: "runtime" };
 		if (this.snapshot.storedProviders.has(providerId)) return { configured: true, source: "stored" };
 		const configured = configuredRequestAuthStatus(

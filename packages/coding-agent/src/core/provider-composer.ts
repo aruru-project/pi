@@ -695,6 +695,19 @@ export function resolveConfiguredModelHeaders(
 	);
 }
 
+/** Headers an extension registers for a provider and for its own models, for a provider defined elsewhere. */
+export function resolveExtensionHeaders(
+	providerOrModel: string | AnyModel,
+	extension: ProviderConfigInput,
+	env?: Record<string, string>,
+): Record<string, string> | undefined {
+	const providerId = typeof providerOrModel === "string" ? providerOrModel : providerOrModel.provider;
+	const modelHeaders =
+		typeof providerOrModel === "string" ? undefined : rawModelHeaders(providerOrModel, undefined, extension);
+	if (!extension.headers && !modelHeaders) return undefined;
+	return resolveHeadersOrThrow({ ...extension.headers, ...modelHeaders }, `provider "${providerId}"`, env);
+}
+
 export interface CompatibilityRequestConfig {
 	headers?: ProviderHeaders;
 	authHeader: boolean;

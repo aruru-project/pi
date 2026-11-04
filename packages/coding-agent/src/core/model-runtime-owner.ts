@@ -23,13 +23,12 @@ export interface ModelRuntimeOwnerConfiguration {
 
 /** What the owner's credentials make available. */
 export interface ModelRuntimeOwnerAuthState {
-	/**
-	 * Providers the owner defines. The runtime asks the owner about these only; a provider that only
-	 * this runtime's extensions define keeps its credentials in this runtime.
-	 */
+	/** Providers the owner defines. */
 	providers: string[];
 	/** Credential checks of the owner's configured providers. */
 	checks: Record<string, AuthCheck>;
+	/** Models of every type the owner knows, available or not. */
+	models: Array<{ provider: string; id: string }>;
 	/** Models of every type that the owner's credentials make available. */
 	available: Array<{ provider: string; id: string }>;
 	/** Providers with a credential stored at the owner. */
@@ -52,32 +51,45 @@ export interface ModelRuntimeOwner {
 
 const modelKey = (model: { provider: string; id: string }) => `${model.provider}\0${model.id}`;
 
-/** Availability of an owned runtime: the owner's for its providers, the runtime's own for the rest. */
+/**
+ * Availability of an owned runtime. The owner answers for every provider except those that only
+ * this runtime's extensions define, including before its first answer arrives.
+ */
 export class OwnedAuth
 	implements Pick<MutableModels, "checkAuth" | "getAvailable" | "getAllAvailable" | "getAvailableOfType">
 {
-	private state: ModelRuntimeOwnerAuthState = { providers: [], checks: {}, available: [], stored: [] };
-	private owned = new Set<string>();
-	private available = new Set<string>();
-
 	readonly owner: ModelRuntimeOwner;
 	private readonly local: MutableModels;
+	private readonly definedHere: (providerId: string) => boolean;
+	private state: ModelRuntimeOwnerAuthState = { providers: [], checks: {}, models: [], available: [], stored: [] };
+	private ownerProviders = new Set<string>();
+	private known = new Set<string>();
+	private available = new Set<string>();
+	private requested = 0;
+	private committed = 0;
 
-	constructor(owner: ModelRuntimeOwner, local: MutableModels) {
+	constructor(owner: ModelRuntimeOwner, local: MutableModels, definedHere: (providerId: string) => boolean) {
 		this.owner = owner;
 		this.local = local;
+		this.definedHere = definedHere;
 	}
 
 	async refresh(signal?: AbortSignal): Promise<void> {
+		const seq = ++this.requested;
 		const state = await this.owner.readAuthState({ signal });
 		signal?.throwIfAborted();
+		// Answers can arrive out of order; an older one never replaces a newer one.
+		if (seq < this.committed) return;
+		this.committed = seq;
 		this.state = state;
-		this.owned = new Set(state.providers);
+		this.ownerProviders = new Set(state.providers);
+		this.known = new Set(state.models.map(modelKey));
 		this.available = new Set(state.available.map(modelKey));
 	}
 
+	/** Whether the owner resolves this provider's credentials. */
 	owns(providerId: string): boolean {
-		return this.owned.has(providerId);
+		return this.ownerProviders.has(providerId) || !this.definedHere(providerId);
 	}
 
 	stored(): readonly string[] {
@@ -92,11 +104,16 @@ export class OwnedAuth
 	async getAllAvailable(providerId?: string, options?: AuthOperationOptions): Promise<readonly AnyModel[]> {
 		const providers = providerId ? [providerId] : this.local.getProviders().map((provider) => provider.id);
 		const lists = await Promise.all(
-			providers.map(async (id) =>
-				this.owns(id)
-					? this.local.getAllModels(id).filter((model) => this.available.has(modelKey(model)))
-					: this.local.getAllAvailable(id, options),
-			),
+			providers.map(async (id) => {
+				if (!this.owns(id)) return this.local.getAllAvailable(id, options);
+				const configured = Object.hasOwn(this.state.checks, id);
+				// Models this runtime's extensions add to an owner's provider are available when the owner has its credential.
+				return this.local
+					.getAllModels(id)
+					.filter(
+						(model) => this.available.has(modelKey(model)) || (configured && !this.known.has(modelKey(model))),
+					);
+			}),
 		);
 		return lists.flat();
 	}
