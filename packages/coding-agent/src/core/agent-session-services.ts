@@ -14,6 +14,7 @@ import {
 } from "./resource-loader.ts";
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
+import { PROVIDER_REQUEST_HOOK_EVENTS } from "./session-model-request.ts";
 import { SettingsManager } from "./settings-manager.ts";
 
 /**
@@ -171,6 +172,16 @@ export async function createAgentSessionServices(
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const extensionsResult = resourceLoader.getExtensions();
+	if (options.modelConsumer) {
+		for (const extension of extensionsResult.extensions) {
+			const hooks = PROVIDER_REQUEST_HOOK_EVENTS.filter((event) => (extension.handlers.get(event)?.length ?? 0) > 0);
+			if (hooks.length === 0) continue;
+			diagnostics.push({
+				type: "warning",
+				message: `${extension.path}: ${hooks.join(", ")} will not run, because model requests are executed by another process. The rest of the extension works.`,
+			});
+		}
+	}
 	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
 			requireLocalModelRuntime(modelRuntime).registerProvider(name, config);

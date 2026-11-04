@@ -3,6 +3,14 @@ import type { ExtensionRunner } from "./extensions/runner.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 
+/** Hooks that see or change the provider request itself; they run only where the provider runs. */
+export const PROVIDER_REQUEST_HOOK_EVENTS = [
+	"before_provider_headers",
+	"before_provider_request",
+	"after_provider_response",
+	"provider_stream_event",
+] as const;
+
 /** Session settings are data; provider callbacks execute beside the provider. */
 export function sessionModelRequestOptions(
 	model: Model<Api>,
@@ -21,14 +29,8 @@ export function sessionModelRequestOptions(
 		maxRetryDelayMs: options.maxRetryDelayMs ?? retry.maxRetryDelayMs,
 	};
 	if (!localProvider) {
-		for (const event of [
-			"before_provider_headers",
-			"before_provider_request",
-			"after_provider_response",
-			"provider_stream_event",
-		]) {
-			if (runner?.hasHandlers(event)) throw new Error(`${event} must execute in the model service`);
-		}
+		// Provider request hooks do not run when another process executes the request; services reports
+		// them once per extension. The request still goes out, so the rest of the extension keeps working.
 		return {
 			...common,
 			headers: mergeProviderAttributionHeaders(model, settings, options.sessionId, options.headers),
