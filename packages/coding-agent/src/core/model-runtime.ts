@@ -131,16 +131,6 @@ export interface ModelRuntimeAuthOverrides extends AuthOperationOptions {
 	minOAuthValidityMs?: number;
 }
 
-/** What an extension gets to call a model itself: the resolved credential and headers, or why there is none. */
-export type ResolvedRequestAuth =
-	| {
-			ok: true;
-			apiKey?: string;
-			headers?: ProviderHeaders;
-			baseUrl?: string;
-			env?: Record<string, string>;
-	  }
-	| { ok: false; error: string };
 export type CredentialSynchronizationOperation = "login" | "logout" | "setRuntimeApiKey" | "removeRuntimeApiKey";
 
 /** Credentials changed successfully, but the local model/auth snapshot could not be synchronized. */
@@ -584,41 +574,6 @@ export class ModelRuntime implements Models {
 				headers: mergeHeaders(resolution.auth.headers, configuredHeaders),
 			},
 		};
-	}
-
-	/**
-	 * The credential and headers an extension needs to call a model itself. Every credential an
-	 * extension can obtain comes from here or from getAuth, so a runtime in another process can serve it.
-	 */
-	async getRequestAuth(model: Model<Api>): Promise<ResolvedRequestAuth> {
-		try {
-			const resolution = await this.getAuth(model);
-			if (!resolution) {
-				const compatibility = this.getCompatibilityRequestConfig(model);
-				if (compatibility.authHeader) {
-					return { ok: false, error: `No API key found for "${model.provider}"` };
-				}
-				return { ok: true, headers: compatibility.headers };
-			}
-			return {
-				ok: true,
-				apiKey: resolution.auth.apiKey,
-				headers: resolution.auth.headers,
-				...(resolution.auth.baseUrl ? { baseUrl: resolution.auth.baseUrl } : {}),
-				env: resolution.env,
-			};
-		} catch (error) {
-			const cause = error instanceof Error ? error.cause : undefined;
-			const message =
-				cause instanceof Error ? cause.message : error instanceof Error ? error.message : String(error);
-			return {
-				ok: false,
-				error:
-					message === "authHeader requires a resolved API key"
-						? `No API key found for "${model.provider}"`
-						: message,
-			};
-		}
 	}
 
 	private enqueueCredentialOperation<T>(providerId: string, signal: AbortSignal, task: () => Promise<T>): Promise<T> {

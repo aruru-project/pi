@@ -584,8 +584,6 @@ export interface AssistantMessage {
 	stopReason: StopReason;
 	deferred?: DeferredHandle;
 	errorMessage?: string;
-	/** Explicit veto on automatic replay, e.g. a service lost an in-flight request. */
-	retryable?: false;
 	rawStopReason?: string;
 	/**
 	 * Provider indication of whether the model explicitly ended its turn.

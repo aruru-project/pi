@@ -4,7 +4,6 @@ import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import { type ModelConsumer, requireLocalModelRuntime } from "./model-consumer.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import {
 	DefaultResourceLoader,
@@ -14,7 +13,6 @@ import {
 } from "./resource-loader.ts";
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
-import { PROVIDER_REQUEST_HOOK_EVENTS } from "./session-model-request.ts";
 import { SettingsManager } from "./settings-manager.ts";
 
 /**
@@ -41,9 +39,6 @@ export interface CreateAgentSessionServicesOptions {
 	agentDir?: string;
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
-	modelConsumer?: ModelConsumer;
-	/** Refresh an external catalog snapshot without transferring provider ownership. */
-	refreshModelConsumer?: () => Promise<void>;
 	modelRuntimeSignal?: AbortSignal;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
@@ -80,15 +75,7 @@ export interface CreateAgentSessionFromServicesOptions {
 export interface AgentSessionServices {
 	cwd: string;
 	agentDir: string;
-	/** Local management only; throws when services use an external consumer. */
 	modelRuntime: ModelRuntime;
-	models: ModelConsumer;
-	refreshModels(): Promise<void>;
-	/** Read current availability, including credential changes made by another process. */
-	getAvailableModels(): ReturnType<ModelRuntime["getAvailable"]>;
-	getModelError(): string | undefined;
-	/** Execution selection forwarded without invoking the management getter. */
-	modelExecution: Pick<CreateAgentSessionOptions, "modelRuntime" | "modelConsumer">;
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
@@ -152,15 +139,13 @@ export async function createAgentSessionServices(
 ): Promise<AgentSessionServices> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
-	if (options.modelRuntime && options.modelConsumer) throw new Error("Choose modelRuntime or modelConsumer, not both");
-	const modelRuntime = options.modelConsumer
-		? undefined
-		: (options.modelRuntime ??
-			(await ModelRuntime.create({
-				authPath: join(agentDir, "auth.json"),
-				modelsPath: join(agentDir, "models.json"),
-				signal: options.modelRuntimeSignal,
-			})));
+	const modelRuntime =
+		options.modelRuntime ??
+		(await ModelRuntime.create({
+			authPath: join(agentDir, "auth.json"),
+			modelsPath: join(agentDir, "models.json"),
+			signal: options.modelRuntimeSignal,
+		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
@@ -172,19 +157,9 @@ export async function createAgentSessionServices(
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const extensionsResult = resourceLoader.getExtensions();
-	if (options.modelConsumer) {
-		for (const extension of extensionsResult.extensions) {
-			const hooks = PROVIDER_REQUEST_HOOK_EVENTS.filter((event) => (extension.handlers.get(event)?.length ?? 0) > 0);
-			if (hooks.length === 0) continue;
-			diagnostics.push({
-				type: "warning",
-				message: `${extension.path}: ${hooks.join(", ")} will not run, because model requests are executed by another process. The rest of the extension works.`,
-			});
-		}
-	}
 	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
-			requireLocalModelRuntime(modelRuntime).registerProvider(name, config);
+			modelRuntime.registerProvider(name, config);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({
@@ -196,7 +171,7 @@ export async function createAgentSessionServices(
 	extensionsResult.runtime.pendingProviderRegistrations = [];
 	for (const { provider, extensionPath } of extensionsResult.runtime.pendingNativeProviderRegistrations) {
 		try {
-			requireLocalModelRuntime(modelRuntime).registerNativeProvider(provider);
+			modelRuntime.registerNativeProvider(provider);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({
@@ -208,7 +183,7 @@ export async function createAgentSessionServices(
 	extensionsResult.runtime.pendingNativeProviderRegistrations = [];
 	for (const { definition, extensionPath } of extensionsResult.runtime.pendingVirtualModelRegistrations) {
 		try {
-			requireLocalModelRuntime(modelRuntime).registerVirtualModel(definition);
+			modelRuntime.registerVirtualModel(definition);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({
@@ -218,29 +193,13 @@ export async function createAgentSessionServices(
 		}
 	}
 	extensionsResult.runtime.pendingVirtualModelRegistrations = [];
-	const models = options.modelConsumer ?? requireLocalModelRuntime(modelRuntime);
-	const refreshModels = async () => {
-		if (modelRuntime) await modelRuntime.refresh({ allowNetwork: false });
-		else await options.refreshModelConsumer?.();
-	};
-	await refreshModels();
+	await modelRuntime.refresh({ allowNetwork: false });
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
 
 	return {
 		cwd,
 		agentDir,
-		get modelRuntime() {
-			return requireLocalModelRuntime(modelRuntime);
-		},
-		models,
-		modelExecution: modelRuntime ? { modelRuntime } : { modelConsumer: models },
-		refreshModels,
-		getAvailableModels: async () => {
-			if (modelRuntime) return modelRuntime.getAvailable();
-			await refreshModels();
-			return models.getAvailableSnapshot();
-		},
-		getModelError: () => models.getError(),
+		modelRuntime,
 		settingsManager,
 		resourceLoader,
 		diagnostics,
@@ -260,7 +219,7 @@ export async function createAgentSessionFromServices(
 	return createAgentSession({
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
-		...options.services.modelExecution,
+		modelRuntime: options.services.modelRuntime,
 		settingsManager: options.services.settingsManager,
 		resourceLoader: options.services.resourceLoader,
 		sessionManager: options.sessionManager,
