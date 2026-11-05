@@ -229,9 +229,11 @@ export class ModelRuntime implements Models {
 					owner,
 					this.models,
 					(providerId) =>
-						this.extensionProviders.has(providerId) ||
-						this.nativeExtensionProviders.has(providerId) ||
-						this.virtualModels.has(providerId),
+						(this.extensionProviders.has(providerId) ||
+							this.nativeExtensionProviders.has(providerId) ||
+							this.virtualModels.has(providerId)) &&
+						!this.defaultBuiltins.has(providerId) &&
+						!this.config.getProvider(providerId),
 				)
 			: undefined;
 		this.ownerStore = owner ? (modelsStore as InMemoryCodingAgentModelsStore) : undefined;
@@ -618,10 +620,15 @@ export class ModelRuntime implements Models {
 			const resolution = await this.owned.owner.getAuth(providerOrModel, overrides);
 			const extension = this.extensionProviders.get(providerId);
 			if (!resolution || !extension) return resolution;
-			const extensionHeaders = resolveExtensionHeaders(providerOrModel, extension, {
-				...(resolution.env ?? {}),
-				...(overrides.env ?? {}),
-			});
+			const extensionHeaders = resolveExtensionHeaders(
+				providerOrModel,
+				extension,
+				this.config.getProvider(providerId),
+				{
+					...(resolution.env ?? {}),
+					...(overrides.env ?? {}),
+				},
+			);
 			return {
 				...resolution,
 				auth: { ...resolution.auth, headers: mergeHeaders(resolution.auth.headers, extensionHeaders) },

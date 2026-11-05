@@ -53,14 +53,15 @@ const modelKey = (model: { provider: string; id: string }) => `${model.provider}
 
 /**
  * Availability of an owned runtime. The owner answers for every provider except those that only
- * this runtime's extensions define, including before its first answer arrives.
+ * this runtime's extensions define, including before its first answer arrives. An extension that
+ * adds to a built-in provider or one in the owner's configuration does not make it local.
  */
 export class OwnedAuth
 	implements Pick<MutableModels, "checkAuth" | "getAvailable" | "getAllAvailable" | "getAvailableOfType">
 {
 	readonly owner: ModelRuntimeOwner;
 	private readonly local: MutableModels;
-	private readonly definedHere: (providerId: string) => boolean;
+	private readonly definedOnlyHere: (providerId: string) => boolean;
 	private state: ModelRuntimeOwnerAuthState = { providers: [], checks: {}, models: [], available: [], stored: [] };
 	private ownerProviders = new Set<string>();
 	private known = new Set<string>();
@@ -68,10 +69,10 @@ export class OwnedAuth
 	private requested = 0;
 	private committed = 0;
 
-	constructor(owner: ModelRuntimeOwner, local: MutableModels, definedHere: (providerId: string) => boolean) {
+	constructor(owner: ModelRuntimeOwner, local: MutableModels, definedOnlyHere: (providerId: string) => boolean) {
 		this.owner = owner;
 		this.local = local;
-		this.definedHere = definedHere;
+		this.definedOnlyHere = definedOnlyHere;
 	}
 
 	async refresh(signal?: AbortSignal): Promise<void> {
@@ -89,7 +90,7 @@ export class OwnedAuth
 
 	/** Whether the owner resolves this provider's credentials. */
 	owns(providerId: string): boolean {
-		return this.ownerProviders.has(providerId) || !this.definedHere(providerId);
+		return this.ownerProviders.has(providerId) || !this.definedOnlyHere(providerId);
 	}
 
 	stored(): readonly string[] {

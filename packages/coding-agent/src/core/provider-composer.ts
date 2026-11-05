@@ -695,17 +695,29 @@ export function resolveConfiguredModelHeaders(
 	);
 }
 
-/** Headers an extension registers for a provider and for its own models, for a provider defined elsewhere. */
+/**
+ * Headers an extension registers for a provider defined elsewhere and for its models, resolved
+ * here, to lay over the owner's resolved headers in Pi's usual order: an extension's provider
+ * header gives way to a model header in the owner's configuration, whose values are never
+ * resolved here; an extension's model header wins.
+ */
 export function resolveExtensionHeaders(
 	providerOrModel: string | AnyModel,
 	extension: ProviderConfigInput,
+	ownerConfig: ModelsJsonProvider | undefined,
 	env?: Record<string, string>,
 ): Record<string, string> | undefined {
 	const providerId = typeof providerOrModel === "string" ? providerOrModel : providerOrModel.provider;
-	const modelHeaders =
-		typeof providerOrModel === "string" ? undefined : rawModelHeaders(providerOrModel, undefined, extension);
-	if (!extension.headers && !modelHeaders) return undefined;
-	return resolveHeadersOrThrow({ ...extension.headers, ...modelHeaders }, `provider "${providerId}"`, env);
+	const model = typeof providerOrModel === "string" ? undefined : providerOrModel;
+	const ownerModelHeaders = new Set(
+		Object.keys((model && rawModelHeaders(model, ownerConfig, undefined)) ?? {}).map((name) => name.toLowerCase()),
+	);
+	const providerHeaders = Object.fromEntries(
+		Object.entries(extension.headers ?? {}).filter(([name]) => !ownerModelHeaders.has(name.toLowerCase())),
+	);
+	const modelHeaders = model ? rawModelHeaders(model, undefined, extension) : undefined;
+	if (Object.keys(providerHeaders).length === 0 && !modelHeaders) return undefined;
+	return resolveHeadersOrThrow({ ...providerHeaders, ...modelHeaders }, `provider "${providerId}"`, env);
 }
 
 export interface CompatibilityRequestConfig {

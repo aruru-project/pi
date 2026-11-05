@@ -11,7 +11,7 @@ const model = {
 	id: "m",
 	name: "m",
 	reasoning: false,
-	input: ["text"],
+	input: ["text"] as ("text" | "image")[],
 	contextWindow: 1000,
 	maxTokens: 100,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -73,6 +73,46 @@ describe("ModelRuntime with an owner", () => {
 		const auth = await registry.getApiKeyAndHeaders(runtime.getModel("custom", "m")!);
 		expect(auth.ok).toBe(false);
 		expect(existsSync(marker)).toBe(false);
+	});
+
+	// Review of 983c5c40: an extension adding headers to a built-in provider made it count as local
+	// until the owner answered, so the Work's own key could be used.
+	it("an extension adding to a built-in provider does not make it local", async () => {
+		process.env.OPENAI_API_KEY = "key-of-this-machine";
+		const { owner, asked } = silentOwner({ providers: {} });
+		const runtime = await ModelRuntime.create({ owner });
+		runtime.registerProvider("openai", { headers: { "x-extension": "yes" } });
+
+		expect(await runtime.getAuth("openai")).toBeUndefined();
+		expect(asked).toEqual(["openai"]);
+	});
+
+	// Review of 983c5c40: Pi lets a model's own header win over a provider-wide one. The owner resolves
+	// its configured headers; an extension's provider header must still give way to a model header there.
+	it("a model header in the owner's configuration beats an extension's provider header", async () => {
+		const configured = {
+			providers: {
+				custom: {
+					baseUrl: "http://127.0.0.1:9/v1",
+					api: "openai-completions",
+					apiKey: "configured",
+					models: [{ ...model, headers: { "x-route": "model-specific" } }],
+				},
+			},
+		};
+		const owner: ModelRuntimeOwner = {
+			...silentOwner(configured).owner,
+			// What Main returns: its credential with its configured headers already resolved.
+			getAuth: async () => ({
+				auth: { apiKey: "from-owner", headers: { "x-route": "model-specific" } },
+				source: "owner",
+			}),
+		};
+		const runtime = await ModelRuntime.create({ owner });
+		runtime.registerProvider("custom", { headers: { "x-route": "default", "x-extra": "extension" } });
+
+		const auth = await runtime.getAuth(runtime.getModel("custom", "m")!);
+		expect(auth?.auth.headers).toMatchObject({ "x-route": "model-specific", "x-extra": "extension" });
 	});
 
 	it("keeps the credentials of a provider only its extensions define", async () => {
