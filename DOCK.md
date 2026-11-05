@@ -9,7 +9,7 @@ This fork builds every Pi runtime package that Alu Dock uses, including the SDK 
 - `dock/1.3.0` holds the Dock changes on top of upstream `v1.3.0` (`71023aec1546d6d677a65669c5665c0927ce0dd0`). `dock/0.99.2` keeps the previous release's source.
 - Dock releases are tagged `dock-v<version>`, never `v*`, so upstream's inherited `v*` publishing workflows cannot fire.
 
-`dock-release.json` holds the release version (`1.3.0-dock.1`), the Node requirement (`>=24.0.0`), the upstream tag and commit, and the packages Dock imports directly.
+`dock-release.json` holds the release version (`1.3.0-dock.2`), the Node requirement (`>=24.0.0`), the upstream tag and commit, and the packages Dock imports directly.
 
 ## What we change
 
@@ -20,9 +20,10 @@ Each change is its own commit so it can be reviewed and replayed on the next ups
 3. **Extension model settings.** With `extensionModelMutationPolicy: "legacy-defaults"`, `pi.setModel` and `pi.setThinkingLevel` save defaults as Pi 0.84 did, for existing extensions.
 4. **Default compaction prompts.** `getCompactionPromptTemplates()` lets Dock show what compaction asks for. It is read-only.
 5. **Cache warming off by default.** Warming sends paid requests, so it runs only after the user sets `cacheWarming` to `"streaming"` or `"idle"` in global settings. The default lives in `settings-defaults.ts`, which also feeds the published settings JSON Schema.
-6. **Packaging tools** in `scripts/` (described below).
+6. **Model configuration and credentials from another process** (since `1.3.0-dock.2`). `ModelRuntime.create({ owner })` takes `models.json`, the stored catalogs and every credential from an owner, such as Dock's Main serving several machines; the runtime still sends and handles its own requests, and only the owner refreshes subscriptions. Every credential read goes through `getAuth`, so `ModelRegistry`'s entries for extensions use the owner too. Providers that only the runtime's extensions define keep their own credentials. The change is in `model-runtime-owner.ts`, `model-runtime.ts`, `model-config.ts` (`fromContent`), `models-store.ts` (`replace`) and `provider-composer.ts` (`resolveExtensionHeaders`); `FileModelsStore` is exported. On `dock/1.3.0-model-service` an earlier design and its revert precede it; replay the net change.
+7. **Packaging tools** in `scripts/` (described below).
 
-Without the opt-ins, Pi behaves as upstream, except that cache warming is off. API details are in [SDK: Dock additions](packages/coding-agent/docs/sdk.md#dock-additions).
+Without the opt-ins (an owner is one), Pi behaves as upstream, except that cache warming is off. API details are in [SDK: Dock additions](packages/coding-agent/docs/sdk.md#dock-additions).
 
 ## Building a package
 
