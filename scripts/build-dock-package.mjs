@@ -74,14 +74,24 @@ const sourceSha256 = sourceFingerprint();
 run(process.execPath, [join(root, "scripts/generate-coding-agent-install-lock.mjs"), "--check"]);
 const installLockBytes = readFileSync(join(root, "packages/coding-agent/install-lock/package-lock.json"));
 const installLock = JSON.parse(installLockBytes.toString("utf8"));
-// The built-in model list is generated data that upstream keeps out of git. Its content is not
-// important (users refresh it with `aludock update model`); the build only needs a valid copy.
+// The built-in model list is generated data that upstream keeps out of git.
 const modelDataManifest = join(root, "packages/ai/src/providers/data/.manifest.json");
 if (!existsSync(modelDataManifest)) {
 	throw new Error("The built-in model list is missing. Run `npm run hydrate:model-data` first (behind a proxy, set NODE_USE_ENV_PROXY=1).");
 }
-const modelDataBytes = readFileSync(modelDataManifest);
-const modelData = { generatedAt: JSON.parse(modelDataBytes.toString("utf8")).generatedAt, manifestSha256: hash(modelDataBytes) };
+// Pi uses a saved pi.dev catalog only when it is dated after this list. Hydrating dates the list
+// now, but the model IDs written out in the generator (Codex, for one) are those of the upstream
+// release. Dated now, the list would shut out every catalog saved between that release and this
+// build, with the models only they have. So it is dated no later than the upstream release.
+const upstreamReleasedAt = new Date(git("log", "-1", "--format=%cI", config.upstream.commit)).toISOString();
+const modelDataRecord = JSON.parse(readFileSync(modelDataManifest, "utf8"));
+if (Date.parse(modelDataRecord.generatedAt) > Date.parse(upstreamReleasedAt)) {
+	modelDataRecord.hydratedAt = modelDataRecord.generatedAt;
+	modelDataRecord.generatedAt = upstreamReleasedAt;
+	writeFileSync(modelDataManifest, `${JSON.stringify(modelDataRecord)}\n`);
+}
+const modelData = { generatedAt: modelDataRecord.generatedAt, hydratedAt: modelDataRecord.hydratedAt ?? modelDataRecord.generatedAt,
+	manifestSha256: hash(readFileSync(modelDataManifest)) };
 const version = candidate ? `${config.version}.candidate.${sourceSha256.slice(0, 12)}` : config.version;
 mkdirSync(out, { recursive: true });
 const home = join(out, "home");
@@ -195,8 +205,16 @@ const installedManifest = JSON.parse(readFileSync(join(installed, "package.json"
 assert.equal(installedManifest.version, version);
 assert.equal(installedManifest.engines.node, config.node);
 assert.deepEqual(JSON.parse(readFileSync(join(installed, "dock-provenance.json"), "utf8")), { ...provenance, name });
+assert.equal(JSON.parse(readFileSync(join(consumer, "node_modules/@earendil-works/pi-ai/dist/providers/data/.manifest.json"), "utf8")).generatedAt,
+	modelData.generatedAt, "The installed built-in model list must carry the date set above");
 const probe = join(consumer, "smoke-sdk.mjs");
+// A catalog saved just after the upstream release; the installed package must use it, whenever its list was hydrated.
+const savedCatalog = { "openai-codex": { lastModified: Date.parse(upstreamReleasedAt) + 1000, checkedAt: Date.now(),
+	models: [{ id: "dock-package-smoke-saved", name: "saved", api: "openai-codex-responses", provider: "openai-codex", baseUrl: "http://127.0.0.1:1",
+		reasoning: false, input: ["text"], contextWindow: 32000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } };
 writeFileSync(probe, `import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, getCompactionPromptTemplates, getDefaultSystemPromptBody, parseDefaultSystemPromptBody, SessionManager, SettingsManager } from "${name}";
 import { TuiMainScreen, Text } from "@earendil-works/pi-tui";
 assert.equal(typeof TuiMainScreen, "function");
@@ -210,10 +228,13 @@ for (const text of Object.values(templates)) assert.ok(typeof text === "string" 
 assert.equal(SettingsManager.inMemory().getCacheWarmingMode(), "off");
 body.intro = "Installed Dock candidate fixture.";
 const selectedThinking = [];
+mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+writeFileSync(join(process.env.PI_CODING_AGENT_DIR, "models-store.json"), ${JSON.stringify(JSON.stringify(savedCatalog))});
 const loader = new DefaultResourceLoader({ cwd: process.cwd(), agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager: SettingsManager.inMemory(), noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true, systemPromptResolver: () => ({kind: "default", body}), extensionFactories: [(pi) => { pi.on("model_select", (_event, ctx) => { selectedThinking.push(ctx.thinkingLevel); }); }] });
 await loader.reload();
 const { session } = await createAgentSession({ cwd: process.cwd(), agentDir: process.env.PI_CODING_AGENT_DIR, resourceLoader: loader, sessionManager: SessionManager.inMemory(), settingsManager: SettingsManager.inMemory() });
 try {
+ assert.ok(session.modelRuntime.getModel("openai-codex", "dock-package-smoke-saved"), "A pi.dev catalog saved after the upstream release must be used");
  assert.match(session.systemPrompt, /^Installed Dock candidate fixture\\.\\n\\n<tools>\\n/);
  session.setActiveToolsByName(["read"]);
  assert.match(session.systemPrompt, /^Installed Dock candidate fixture\\./);
@@ -228,7 +249,7 @@ try {
  assert.deepEqual(selectedThinking, ["high"]);
  assert.equal(session.settingsManager.getDefaultThinkingLevel(), "low");
 } finally { session.dispose(); }
-console.log("Installed SDK and direct TUI share one fork cohort; default body, resolver, tool rebuild, compaction prompts, cache warming off and model-selection preference passed");
+console.log("Installed SDK and direct TUI share one fork cohort; default body, resolver, tool rebuild, compaction prompts, cache warming off, a saved model catalog in use and model-selection preference passed");
 `);
 const sdkOutput = run(process.execPath, [probe], { cwd: consumer, env }).trim();
 const cliOutput = run(process.execPath, [join(installed, installedManifest.bin.pi), "--version"], { cwd: consumer, env }).trim();

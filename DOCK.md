@@ -37,7 +37,9 @@ node scripts/build-dock-package.mjs --candidate --out /new/directory/outside/the
 
 Leave out `--candidate` for a release; a release build refuses uncommitted source. A candidate allows it and gets the version `<version>.candidate.<source hash>`. Candidates are for testing only and are never published.
 
-**Built-in model list.** Upstream keeps the generated model list out of git and regenerates it for each release. We do the same with upstream's own `hydrate:model-data` command, which reads public model catalogs; it needs no keys and calls no model. Node's `fetch` ignores proxy variables unless `NODE_USE_ENV_PROXY=1` is set. The list's content does not matter much: users refresh it with `aludock update model`. The manifest records which list went into the package. No upstream npm Pi package is used.
+**Built-in model list.** Upstream keeps the generated model list out of git and regenerates it for each release. We do the same with upstream's own `hydrate:model-data` command, which reads public model catalogs; it needs no keys and calls no model. Node's `fetch` ignores proxy variables unless `NODE_USE_ENV_PROXY=1` is set. No upstream npm Pi package is used. Hydrate again before a release build so the public data is current.
+
+**The list's date.** Pi uses a saved pi.dev catalog only when it is dated after the built-in list; an older one is ignored whole. Hydrating dates the list at that moment, but some model IDs are written out in the generator (the Codex ones, for example), so they are only as new as the upstream release. `1.3.0-dock.2` was hydrated on 5 November from the generator of 15 October: its Codex list lacked `gpt-6.1-terra`, and it ignored the pi.dev catalog of 30 October that had it. Since `1.3.0-dock.3` the build dates the list no later than the upstream release commit, which is how upstream's own package of that release treats pi.dev catalogs. The package manifest records that date (`generatedAt`), when the list was hydrated (`hydratedAt`) and which list went into the package.
 
 The build:
 
@@ -45,7 +47,7 @@ The build:
 2. Builds everything from source with upstream's `build:offline`.
 3. Packs the runtime packages that the SDK and TUI actually depend on, found from their manifests. For 1.3.0 that is pi-telemetry, pi-ai, pi-agent-core, pi-codemode, pi-mcp, pi-tui and pi-coding-agent; chord is no longer one of them. All get one version, Node 24 as the engine, our repository, and Pi dependencies that point at our release URLs instead of upstream's exact versions. pi-tui's prebuilt native helpers come from the tagged upstream source as they are.
 4. Installs the packages into a separate test project and checks one copy of each, the shared version and provenance, the lockfile entries, and that the SDK and the TUI it uses are the same files. Since 1.0 upstream publishes no `npm-shrinkwrap.json`, so the test install starts from upstream's installer lock (`packages/coding-agent/install-lock`), which the build first checks is current.
-5. Runs a smoke test: SDK and TUI import, the editable prompt and resolver, tool changes, compaction prompts, cache warming off, the thinking preference on model switch, and `pi --version`. No model request is sent.
+5. Runs a smoke test: SDK and TUI import, the editable prompt and resolver, tool changes, compaction prompts, cache warming off, a pi.dev catalog saved after the upstream release in use, the thinking preference on model switch, and `pi --version`. No model request is sent.
 
 Keep from the output: every `.tgz`, `manifest.json`, `SHA256SUMS` and `inputs/source.patch`. `consumer/` shows the test install. `raw/`, `stage/` and `home/` are scratch. Each package also contains `dock-provenance.json`; pi-coding-agent carries this file as `docs/dock-maintenance.md`.
 
