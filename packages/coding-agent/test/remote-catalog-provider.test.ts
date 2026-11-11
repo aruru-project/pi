@@ -199,6 +199,39 @@ describe("remote catalog provider", () => {
 		expect(stored?.checkedAt).toBeGreaterThanOrEqual(checkedAt ?? 0);
 	});
 
+	it("uses an unchanged catalog once pi.dev dates it after the generated one", async () => {
+		// pi.dev re-dated a catalog without changing it; the stored copy kept its old date and stayed ignored.
+		const localGeneratedAt = Date.parse("2026-11-05T05:02:45.000Z");
+		const newerHeader = new Date(localGeneratedAt + 60_000).toUTCString();
+		const responses = [
+			new Response(JSON.stringify({ dynamic: model("dynamic") }), {
+				headers: { etag: '"catalog-1"', "last-modified": new Date(localGeneratedAt - 60_000).toUTCString() },
+			}),
+			new Response(null, { status: 304, headers: { etag: '"catalog-1"' } }),
+			new Response(null, { status: 304, headers: { etag: '"catalog-1"', "last-modified": newerHeader } }),
+		];
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift() as Response);
+		const provider = testProvider(localGeneratedAt);
+		const store = new InMemoryModelsStore();
+
+		await refreshProvider(provider, store);
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static"]);
+
+		// A 304 without a date keeps the stored one.
+		await refreshProvider(provider, store, { force: true });
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static"]);
+		expect(await store.read(provider.id)).toMatchObject({ lastModified: localGeneratedAt - 60_000 });
+
+		await refreshProvider(provider, store, { force: true });
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
+		expect(await store.read(provider.id)).toMatchObject({ lastModified: Date.parse(newerHeader) });
+
+		// A new session reads the stored entry without the network.
+		const restarted = testProvider(localGeneratedAt);
+		await refreshProvider(restarted, store, { allowNetwork: false });
+		expect(restarted.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
+	});
+
 	it("drops a stale etag when the overlay becomes unavailable", async () => {
 		const responses = [
 			new Response(JSON.stringify({ dynamic: model("dynamic") }), {

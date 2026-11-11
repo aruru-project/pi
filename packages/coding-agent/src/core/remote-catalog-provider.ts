@@ -147,10 +147,20 @@ export function withRemoteCatalog(
 			const response = await requestCatalog(provider.id, catalogBaseUrl, context.signal, validator);
 			if (context.signal.aborted) return;
 			const checkedAt = Date.now();
-			// Unchanged: dynamicModels already holds the stored overlay, so only the
-			// freshness window moves.
+			// Unchanged body. pi.dev may still have given it a later date; a catalog saved before the
+			// built-in data was generated is ignored until that date is taken, however often it is checked.
 			if (response.status === 304 && stored) {
-				await context.publish({ persist: { ...stored, checkedAt } });
+				const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
+				const entry: ModelsStoreEntry = Number.isNaN(lastModified)
+					? { ...stored, checkedAt }
+					: { ...stored, checkedAt, lastModified };
+				const published = remoteModels(entry, localGeneratedAt).filter((model) => model.provider === provider.id);
+				await context.publish({
+					persist: entry,
+					update: () => {
+						dynamicModels = published;
+					},
+				});
 				return;
 			}
 			if (response.status === 404 || response.status === 501) {
