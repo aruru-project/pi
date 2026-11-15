@@ -1037,6 +1037,7 @@ export class AgentSession {
 	private _commitBoundaryDrafts(drafts: SessionBoundaryDraft[]): void {
 		const appended = this._applyBoundaryDrafts(this.sessionManager, drafts);
 		this._refreshFinalizedContext();
+		if (appended.some((entry) => entry.type === "compaction")) cleanupSessionResources(this.sessionId);
 		for (const entry of appended) this._emit({ type: "entry_appended", entry });
 	}
 
@@ -2909,6 +2910,7 @@ export class AgentSession {
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
 			const newEntries = this.sessionManager.getEntries();
 			this._refreshFinalizedContext();
+			cleanupSessionResources(this.sessionId);
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
 
 			// Get the saved compaction entry for the extension event
@@ -3239,6 +3241,7 @@ export class AgentSession {
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
 			const newEntries = this.sessionManager.getEntries();
 			this._refreshFinalizedContext();
+			cleanupSessionResources(this.sessionId);
 			const estimatedTokensAfter = estimateMessagesTokens(this.sessionManager.buildSessionProjection().messages);
 
 			// Get the saved compaction entry for the extension event
@@ -4201,6 +4204,7 @@ export class AgentSession {
 
 			// Update finalized context from the canonical session projection.
 			this._refreshFinalizedContext();
+			cleanupSessionResources(this.sessionId);
 			this._restoreToolsFromTranscript();
 
 			// Emit session_tree event
