@@ -8,6 +8,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dependencyFields, inspectCohortResolutions, inspectInstalledCohort, isolatedEnvironment, within } from "./dock-package-validation.mjs";
 import { findPackageDirectories } from "./package-workspaces.mjs";
+import { hydrateModelCatalogBytes, readPinnedModelCatalog } from "./update-model-catalog-pin.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const config = JSON.parse(readFileSync(join(root, "dock-release.json"), "utf8"));
@@ -15,12 +16,15 @@ const name = "@earendil-works/pi-coding-agent";
 const args = process.argv.slice(2);
 const candidate = args.includes("--candidate");
 const outIndex = args.indexOf("--out");
+const catalogIndex = args.indexOf("--model-catalog");
 if (args.includes("--help")) {
-	console.log("Usage: node scripts/build-dock-package.mjs --out <new-directory> [--candidate]\nBuilds the fork runtime cohort with locked inputs on Node24+. --candidate permits dirty source; never publish it.\nRun `npm run hydrate:model-data` first to create the built-in model list.");
+	console.log("Usage: node scripts/build-dock-package.mjs --out <new-directory> [--candidate] [--model-catalog <file>]\nBuilds the fork runtime cohort with locked inputs on Node24+. --candidate permits dirty source; never publish it.\nModel data comes only from nix/model-catalog.json's pinned revision. --model-catalog supplies a hash-verified local copy.");
 	process.exit(0);
 }
-if (outIndex < 0 || !args[outIndex + 1] || args.some((arg, index) => arg !== "--candidate" && arg !== "--out" && index !== outIndex + 1)) {
-	throw new Error("Expected --out <new-directory> and optional --candidate");
+if (outIndex < 0 || !args[outIndex + 1] || (catalogIndex >= 0 && !args[catalogIndex + 1])
+	|| args.some((arg, index) => arg !== "--candidate" && arg !== "--out" && arg !== "--model-catalog"
+		&& index !== outIndex + 1 && !(catalogIndex >= 0 && index === catalogIndex + 1))) {
+	throw new Error("Expected --out <new-directory>, optional --candidate and --model-catalog <file>");
 }
 const out = resolve(args[outIndex + 1]);
 if (within(root, out) || existsSync(out)) throw new Error("Output must be a new directory outside the source repository");
@@ -74,23 +78,18 @@ const sourceSha256 = sourceFingerprint();
 run(process.execPath, [join(root, "scripts/generate-coding-agent-install-lock.mjs"), "--check"]);
 const installLockBytes = readFileSync(join(root, "packages/coding-agent/install-lock/package-lock.json"));
 const installLock = JSON.parse(installLockBytes.toString("utf8"));
-// The built-in model list is generated data that upstream keeps out of git.
+// Source and model data must come from the same pinned release, just like upstream's
+// reproducible build. Never adopt a live catalog or a stale generated working directory.
+const catalog = await readPinnedModelCatalog(root, catalogIndex >= 0 ? resolve(args[catalogIndex + 1]) : undefined);
+hydrateModelCatalogBytes(root, catalog.bytes);
 const modelDataManifest = join(root, "packages/ai/src/providers/data/.manifest.json");
-if (!existsSync(modelDataManifest)) {
-	throw new Error("The built-in model list is missing. Run `npm run hydrate:model-data` first (behind a proxy, set NODE_USE_ENV_PROXY=1).");
-}
-// Pi uses a saved pi.dev catalog only when it is dated after this list. Hydrating dates the list
-// now, but the model IDs written out in the generator (Codex, for one) are those of the upstream
-// release. Dated now, the list would shut out every catalog saved between that release and this
-// build, with the models only they have. So it is dated no later than the upstream release.
 const upstreamReleasedAt = new Date(git("log", "-1", "--format=%cI", config.upstream.commit)).toISOString();
 const modelDataRecord = JSON.parse(readFileSync(modelDataManifest, "utf8"));
-if (Date.parse(modelDataRecord.generatedAt) > Date.parse(upstreamReleasedAt)) {
-	modelDataRecord.hydratedAt = modelDataRecord.generatedAt;
-	modelDataRecord.generatedAt = upstreamReleasedAt;
-	writeFileSync(modelDataManifest, `${JSON.stringify(modelDataRecord)}\n`);
-}
-const modelData = { generatedAt: modelDataRecord.generatedAt, hydratedAt: modelDataRecord.hydratedAt ?? modelDataRecord.generatedAt,
+// The catalog is part of this release, not newly generated model knowledge. A later
+// owner-saved pi.dev catalog must still be able to replace this built-in snapshot.
+modelDataRecord.generatedAt = upstreamReleasedAt;
+writeFileSync(modelDataManifest, `${JSON.stringify(modelDataRecord)}\n`);
+const modelData = { revision: catalog.revision, generatedAt: upstreamReleasedAt,
 	manifestSha256: hash(readFileSync(modelDataManifest)) };
 const version = candidate ? `${config.version}.candidate.${sourceSha256.slice(0, 12)}` : config.version;
 mkdirSync(out, { recursive: true });
@@ -99,6 +98,7 @@ mkdirSync(home);
 const env = isolatedEnvironment(home);
 const inputs = join(out, "inputs");
 mkdirSync(inputs);
+writeFileSync(join(inputs, "model-catalog.json"), catalog.bytes);
 // Save the uncommitted patch as well as its fingerprint so development candidates remain inspectable.
 let patch = run("git", ["diff", "HEAD", "--binary", "--", ...paths]);
 for (const path of run("git", ["ls-files", "--others", "--exclude-standard", "-z", "--", ...paths]).split("\0").filter(Boolean)) {
