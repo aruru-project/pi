@@ -30,13 +30,14 @@ import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { collapseSystemMessages, getCurrentTools, getInitialSystemMessage } from "../utils/transcript.ts";
-import type { GoogleApiThinkingLevel, ResolvedGoogleThinkingLevel } from "./google-shared.ts";
+import type { GoogleApiThinkingLevel } from "./google-shared.ts";
 import {
 	convertMessages,
 	convertTools,
 	getDisabledGoogleThinkingConfig,
 	isThinkingPart,
 	mapStopReason,
+	resolveGoogleBudgetLevel,
 	resolveGoogleFunctionCallingMode,
 	resolveGoogleThinkingLevel,
 	retainThoughtSignature,
@@ -334,9 +335,8 @@ export const streamSimple: StreamFunction<"google-vertex", SimpleStreamOptions> 
 			thinking: { enabled: false },
 		} satisfies GoogleVertexOptions);
 	}
-	const resolvedLevel = resolveGoogleThinkingLevel(model, clampedReasoning);
-
 	if (usesGoogleThinkingLevel(model)) {
+		const resolvedLevel = resolveGoogleThinkingLevel(model, clampedReasoning);
 		return stream(model, context, {
 			...base,
 			thinking: {
@@ -350,7 +350,11 @@ export const streamSimple: StreamFunction<"google-vertex", SimpleStreamOptions> 
 		...base,
 		thinking: {
 			enabled: true,
-			budgetTokens: getGoogleBudget(model, resolvedLevel, options.thinkingBudgets),
+			budgetTokens: getGoogleBudget(
+				model,
+				resolveGoogleBudgetLevel(model, clampedReasoning),
+				options.thinkingBudgets,
+			),
 		},
 	} satisfies GoogleVertexOptions);
 };
@@ -490,6 +494,8 @@ function buildParams(
 			: undefined;
 	const systemInstruction = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : "";
 	const config: GenerateContentConfig = {
+		// A continuation is a separate billable request. Leave the truncated result with the caller.
+		automaticContinuation: false,
 		...(Object.keys(generationConfig).length > 0 && generationConfig),
 		...(systemInstruction && { systemInstruction: sanitizeSurrogates(systemInstruction) }),
 		...(currentTools.length > 0 && {
@@ -530,7 +536,7 @@ function buildParams(
 
 function getGoogleBudget(
 	model: Model<"google-vertex">,
-	level: ResolvedGoogleThinkingLevel,
+	level: keyof ThinkingBudgets,
 	customBudgets?: ThinkingBudgets,
 ): number {
 	if (customBudgets?.[level] !== undefined) {
@@ -538,7 +544,7 @@ function getGoogleBudget(
 	}
 
 	if (model.id.includes("2.5-pro")) {
-		const budgets: Record<ResolvedGoogleThinkingLevel, number> = {
+		const budgets: Record<keyof ThinkingBudgets, number> = {
 			minimal: 128,
 			low: 2048,
 			medium: 8192,
@@ -548,7 +554,7 @@ function getGoogleBudget(
 	}
 
 	if (model.id.includes("2.5-flash")) {
-		const budgets: Record<ResolvedGoogleThinkingLevel, number> = {
+		const budgets: Record<keyof ThinkingBudgets, number> = {
 			minimal: 128,
 			low: 2048,
 			medium: 8192,

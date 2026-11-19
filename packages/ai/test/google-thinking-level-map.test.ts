@@ -1,5 +1,5 @@
 import type { GenerateContentParameters } from "@google/genai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { streamSimple as streamSimpleGoogle } from "../src/api/google-generative-ai.ts";
 import { resolveGoogleThinkingLevel } from "../src/api/google-shared.ts";
 import { streamSimple as streamSimpleVertex } from "../src/api/google-vertex.ts";
@@ -135,6 +135,38 @@ describe("Google thinking level maps", () => {
 		);
 	});
 
+	// #12184: advertised xhigh used to throw before either Google adapter reached the wire.
+	it.each([
+		["google-generative-ai", "gemini-4-neon", "xhigh"],
+		["google-vertex", "gemini-4-hydrogen", "XHIGH"],
+	] as const)("sends native XHIGH for %s/%s without starting a paid continuation", async (api, id, mapping) => {
+		const requests: unknown[] = [];
+		const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			requests.push(await new Request(input, init).json());
+			const candidate =
+				requests.length === 1
+					? { finishReason: "CONTINUATION", continuationToken: "test-token" }
+					: { finishReason: "STOP" };
+			return new Response(`data: ${JSON.stringify({ candidates: [candidate] })}\n\n`, {
+				headers: { "content-type": "text/event-stream" },
+			});
+		});
+		try {
+			const options = { apiKey: "fixture", reasoning: "xhigh", maxRetries: 0 } as const;
+			const map = { xhigh: mapping };
+			const result = await (api === "google-vertex"
+				? streamSimpleVertex(vertexModel(id, map), context, options)
+				: streamSimpleGoogle(googleModel(id, map), context, options)
+			).result();
+			expect(requests).toHaveLength(1);
+			expect(requests[0]).toMatchObject({ generationConfig: { thinkingConfig: { thinkingLevel: "XHIGH" } } });
+			expect(requests[0]).not.toHaveProperty("generationConfig.thinkingConfig.thinkingBudget");
+			expect(result).toMatchObject({ stopReason: "length", rawStopReason: "CONTINUATION" });
+		} finally {
+			fetch.mockRestore();
+		}
+	});
+
 	// Regression test for https://github.com/earendil-works/pi/issues/9455
 	it.each(googleAdapters)("uses the lowest supported $name level when reasoning is omitted", async ({ capture }) => {
 		const payload = await capture("gemini-3.8-flash", {
@@ -171,6 +203,8 @@ describe("Google thinking level maps", () => {
 		const payload = await capture("gemini-4-argon", {}, "medium");
 
 		expect(payload.config?.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "MEDIUM" });
+		const undeclared = await capture("gemini-4-argon", {}, "xhigh");
+		expect(undeclared.config?.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
 	});
 
 	it.each(["xhigh", "max"] as const)("maps Google Generative AI %s to a supported level", async (reasoning) => {

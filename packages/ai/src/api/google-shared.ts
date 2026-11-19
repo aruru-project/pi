@@ -17,6 +17,7 @@ import type {
 	StopReason,
 	StreamOptions,
 	TextContent,
+	ThinkingBudgets,
 	ThinkingLevel,
 	Tool,
 	TranscriptContext,
@@ -29,12 +30,9 @@ import { transformMessages } from "./transform-messages.ts";
 
 type GoogleApiType = "google-generative-ai" | "google-vertex";
 
-/**
- * Thinking level for Gemini 3 models.
- * Mirrors Google's ThinkingLevel enum values.
- */
-export type GoogleApiThinkingLevel = "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
-export type ResolvedGoogleThinkingLevel = Exclude<ThinkingLevel, "xhigh" | "max">;
+/** String values accepted by the Google SDK's discrete thinking control. */
+export type GoogleApiThinkingLevel = `${GoogleSdkThinkingLevel}`;
+export type ResolvedGoogleThinkingLevel = keyof ThinkingBudgets | "xhigh";
 
 const GOOGLE_SDK_THINKING_LEVEL_MAP: Record<GoogleApiThinkingLevel, GoogleSdkThinkingLevel> = {
 	THINKING_LEVEL_UNSPECIFIED: GoogleSdkThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
@@ -42,6 +40,7 @@ const GOOGLE_SDK_THINKING_LEVEL_MAP: Record<GoogleApiThinkingLevel, GoogleSdkThi
 	LOW: GoogleSdkThinkingLevel.LOW,
 	MEDIUM: GoogleSdkThinkingLevel.MEDIUM,
 	HIGH: GoogleSdkThinkingLevel.HIGH,
+	XHIGH: GoogleSdkThinkingLevel.XHIGH,
 };
 
 /** Resolve a supported pi level or model-specific Google mapping to a standard Google level. */
@@ -49,6 +48,15 @@ export function resolveGoogleThinkingLevel<T extends GoogleApiType>(
 	model: Model<T>,
 	level: ThinkingLevel,
 ): ResolvedGoogleThinkingLevel {
+	if (model.thinkingLevelMap?.[level]?.toLowerCase() === "xhigh" && usesGoogleThinkingLevel(model)) return "xhigh";
+	return resolveGoogleBudgetLevel(model, level);
+}
+
+/** Token-budget models use only the original four levels, including explicit downward mappings. */
+export function resolveGoogleBudgetLevel<T extends GoogleApiType>(
+	model: Model<T>,
+	level: ThinkingLevel,
+): keyof ThinkingBudgets {
 	const mapped = model.thinkingLevelMap?.[level];
 	const resolvedLevel = typeof mapped === "string" ? mapped.toLowerCase() : level;
 	switch (resolvedLevel) {
@@ -94,6 +102,8 @@ export function toGoogleThinkingLevel(level: ResolvedGoogleThinkingLevel): Googl
 			return "MEDIUM";
 		case "high":
 			return "HIGH";
+		case "xhigh":
+			return "XHIGH";
 	}
 }
 
@@ -502,6 +512,7 @@ export function mapStopReason(reason: FinishReason): StopReason {
 		case FinishReason.STOP:
 			return "stop";
 		case FinishReason.MAX_TOKENS:
+		case FinishReason.CONTINUATION:
 			return "length";
 		case FinishReason.BLOCKLIST:
 		case FinishReason.PROHIBITED_CONTENT:
@@ -519,6 +530,11 @@ export function mapStopReason(reason: FinishReason): StopReason {
 		case FinishReason.UNEXPECTED_TOOL_CALL:
 		case FinishReason.TOO_MANY_TOOL_CALLS:
 		case FinishReason.NO_IMAGE:
+		case FinishReason.MISSING_THOUGHT_SIGNATURE:
+		case FinishReason.MALFORMED_RESPONSE:
+		case FinishReason.ESCALATION:
+		case FinishReason.PUP_LIMITED_DISABLED:
+		case FinishReason.MODEL_ARMOR:
 			return "error";
 		default: {
 			const _exhaustive: never = reason;
