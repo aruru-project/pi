@@ -473,17 +473,20 @@ describe("SettingsManager", () => {
 	});
 
 	describe("cacheWarming", () => {
-		it("defaults to idle and ignores project settings", () => {
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("idle");
+		it("only warms a paid cache after a global opt-in", () => {
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("off");
+			expect(SettingsManager.inMemory().getCacheWarmingMode()).toBe("off");
 
-			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ cacheWarming: "streaming" }));
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("idle");
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ cacheWarming: "idle" }));
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("off");
 
-			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "streaming" }));
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("streaming");
+			for (const mode of ["streaming", "idle"] as const) {
+				writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: mode }));
+				expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe(mode);
+			}
 
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "bogus" }));
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("idle");
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("off");
 		});
 
 		it("persists the mode globally", async () => {

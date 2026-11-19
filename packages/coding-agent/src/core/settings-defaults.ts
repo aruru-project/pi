@@ -63,7 +63,8 @@ export const SETTINGS_DEFAULTS = {
 		mode: "on",
 		inlineBudget: 3000,
 	},
-	cacheWarming: "idle",
+	// Dock: cache warming makes paid requests; only warm after a global opt-in.
+	cacheWarming: "off",
 	tuiMode: "fullscreen",
 	fullscreenExitOutput: "transcript",
 	fullscreenScrollbar: "auto",
