@@ -1,0 +1,12 @@
+{
+	"version": "1.5.2-dock.1",
+	"node": ">=24.22.1",
+	"repository": "https://github.com/aruru-project/pi",
+	"runtimeRoots": ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-mcp"],
+	"upstream": {
+		"repository": "https://github.com/earendil-works/pi.git",
+		"tag": "v1.5.2",
+		"commit": "b4afdddf44e059c67ccf5097e5317d913521b470",
+		"version": "1.5.2"
+	}
+}
