@@ -1820,6 +1820,7 @@ export class AgentSession {
 			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
+			defaultSystemPromptBody: this._resourceLoader.getDefaultSystemPromptBody?.(),
 			appendSystemPrompt,
 			selectedTools: validToolNames,
 			hiddenTools: [...this._hiddenDeclarations],
