@@ -36,9 +36,17 @@ assert.match(provenance.source.commit, /^[a-f0-9]{40}$/);
 assert.match(provenance.source.sha256, /^[a-f0-9]{64}$/);
 assert.match(provenance.version, /^\d+\.\d+\.\d+-dock\.\d+$/);
 assert.equal(provenance.source.repository, "https://github.com/aruru-project/pi");
-assert.equal(provenance.engine, ">=24.0.0");
 assert.deepEqual(provenance.release, { tag: `dock-v${provenance.version}`, assetBase: `${provenance.source.repository}/releases/download/dock-v${provenance.version}` });
-assert.deepEqual([...provenance.runtimeRoots].sort(), [sdk, tui].sort());
+function releaseInput(path) {
+	const result = spawnSync("git", ["show", `${provenance.source.commit}:${path}`], { cwd: root, encoding: "buffer", maxBuffer: 32 * 1024 * 1024 });
+	assert.equal(result.status, 0, `Cannot read ${path} at release source ${provenance.source.commit}`);
+	return result.stdout;
+}
+const config = JSON.parse(releaseInput("dock-release.json").toString("utf8"));
+assert.equal(provenance.version, config.version);
+assert.equal(provenance.engine, config.node);
+assert.deepEqual(provenance.upstream, config.upstream);
+assert.deepEqual([...provenance.runtimeRoots].sort(), [...config.runtimeRoots].sort());
 const artifacts = new Map(artifactList.map((artifact) => [artifact.name, artifact]));
 assert.equal(artifacts.size, artifactList.length, "Duplicate manifest artifacts");
 for (const artifact of artifacts.values()) {
@@ -66,10 +74,9 @@ function visit(name) {
 for (const name of provenance.runtimeRoots) visit(name);
 assert.equal(visited.size, artifacts.size, "Manifest includes unused Pi packages");
 // The release carries no shrinkwrap; differences are reported against the build's installer lock.
-const buildLock = spawnSync("git", ["show", `${provenance.source.commit}:packages/coding-agent/install-lock/package-lock.json`], { cwd: root, encoding: "buffer", maxBuffer: 32 * 1024 * 1024 });
-assert.equal(buildLock.status, 0, `Release source commit is not available locally: ${provenance.source.commit}`);
-assert.equal(createHash("sha256").update(buildLock.stdout).digest("hex"), provenance.inputs.installLockSha256, "Installer lock does not match the release build");
-const buildLockPackages = JSON.parse(buildLock.stdout.toString("utf8")).packages;
+const buildLock = releaseInput("packages/coding-agent/install-lock/package-lock.json");
+assert.equal(createHash("sha256").update(buildLock).digest("hex"), provenance.inputs.installLockSha256, "Installer lock does not match the release build");
+const buildLockPackages = JSON.parse(buildLock.toString("utf8")).packages;
 mkdirSync(out);
 const home = join(out, "home");
 const consumer = join(out, "consumer");
