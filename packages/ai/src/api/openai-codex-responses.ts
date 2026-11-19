@@ -230,6 +230,14 @@ function compressRequestBodyZstd(bodyJson: string): Uint8Array<ArrayBuffer> | nu
 	}
 }
 
+// A confirmed encoding failure belongs to this session, not every Codex caller.
+// Context replacement and disposal use the existing session-resource lifecycle.
+const uncompressedRequestSessions = new Set<string>();
+registerSessionResourceCleanup((sessionId) => {
+	if (sessionId) uncompressedRequestSessions.delete(sessionId);
+	else uncompressedRequestSessions.clear();
+});
+
 // ============================================================================
 // Main Stream Function
 // ============================================================================
@@ -395,11 +403,16 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			// Compress the request body once for the SSE path. The Codex backend
 			// decodes Content-Encoding: zstd; the WebSocket transport above sends the
 			// uncompressed JSON frame, matching the official Codex client.
-			const compressedBody = compressRequestBodyZstd(bodyJson);
+			const compressionSessionId = options?.sessionId;
+			const compressedBody =
+				compressionSessionId && uncompressedRequestSessions.has(compressionSessionId)
+					? null
+					: compressRequestBodyZstd(bodyJson);
 			if (compressedBody) {
 				sseHeaders.set("content-encoding", "zstd");
 			}
-			const sseBody: Uint8Array<ArrayBuffer> | string = compressedBody ?? bodyJson;
+			let sseBody: Uint8Array<ArrayBuffer> | string = compressedBody ?? bodyJson;
+			let retriedUncompressed = false;
 
 			// Fetch with retry logic for rate limits and transient errors
 			let response: Response | undefined;
@@ -440,6 +453,22 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 					}
 
 					const errorText = await response.text();
+					// pi#12060: valid compressed JSON can get this opaque 400 while the
+					// identical uncompressed body succeeds. Do not rewrite or compact it.
+					if (compressedBody && !retriedUncompressed && response.status === 400) {
+						let detail: unknown;
+						try {
+							detail = (JSON.parse(errorText) as { detail?: unknown } | null)?.detail;
+						} catch {}
+						if (detail === "Bad Request") {
+							retriedUncompressed = true;
+							sseBody = bodyJson;
+							sseHeaders.delete("content-encoding");
+							sseHeaders.delete("content-length");
+							attempt--;
+							continue;
+						}
+					}
 					if (attempt < maxRetries && isRetryableError(response.status, errorText)) {
 						const retryAfterDelayMs = getRetryAfterDelayMs(response.headers);
 						const delayMs =
@@ -457,6 +486,10 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						statusText: response.statusText,
 					});
 					const info = await parseErrorResponse(fakeResponse);
+					if (retriedUncompressed && response.status === 400) {
+						lastError = new Error(info.friendlyMessage || info.message);
+						break;
+					}
 					throw new Error(info.friendlyMessage || info.message);
 				} catch (error) {
 					if (error instanceof Error) {
@@ -498,6 +531,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			}
 
 			assertSuccessfulOutput(output);
+			if (retriedUncompressed && compressionSessionId) {
+				uncompressedRequestSessions.add(compressionSessionId);
+			}
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
