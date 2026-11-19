@@ -71,6 +71,7 @@ import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelConfig } from "./model-config.ts";
+import { type ModelRuntimeOwner, OwnedAuth } from "./model-runtime-owner.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
 import {
 	type AuthStatus,
@@ -80,6 +81,7 @@ import {
 	type ProviderConfigInput,
 	resolveCompatibilityRequestConfig,
 	resolveConfiguredModelHeaders,
+	resolveExtensionHeaders,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
 import { withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
@@ -123,6 +125,11 @@ export interface CreateModelRuntimeOptions {
 	signal?: AbortSignal;
 	/** Skip initial catalog and availability refresh. Static models remain available. */
 	refreshOnCreate?: boolean;
+	/**
+	 * Take the model configuration and credentials from another process. authPath, modelsPath and
+	 * the models store options are then unused; the runtime asks the owner on every refresh.
+	 */
+	owner?: ModelRuntimeOwner;
 }
 
 export interface ModelRuntimeAuthOverrides extends AuthOperationOptions {
@@ -196,6 +203,11 @@ export class ModelRuntime implements Models {
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private availabilityError: string | undefined;
 	private readonly credentialOperations = new Map<string, Promise<unknown>>();
+	/** Set when another process owns the configuration and credentials; it answers for its providers. */
+	private readonly owned: OwnedAuth | undefined;
+	private readonly ownerStore: InMemoryCodingAgentModelsStore | undefined;
+	private ownerError: string | undefined;
+	private readonly auth: Pick<MutableModels, "checkAuth" | "getAvailable" | "getAllAvailable" | "getAvailableOfType">;
 
 	private constructor(
 		credentials: RuntimeCredentials,
@@ -204,6 +216,7 @@ export class ModelRuntime implements Models {
 		modelsStore: ModelsStore,
 		providers: readonly Provider[],
 		modelNetworkEnabled: boolean,
+		owner: ModelRuntimeOwner | undefined,
 	) {
 		this.credentials = credentials;
 		this.config = config;
@@ -212,19 +225,41 @@ export class ModelRuntime implements Models {
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
+		this.owned = owner
+			? new OwnedAuth(
+					owner,
+					this.models,
+					(providerId) =>
+						(this.extensionProviders.has(providerId) ||
+							this.nativeExtensionProviders.has(providerId) ||
+							this.virtualModels.has(providerId)) &&
+						!this.defaultBuiltins.has(providerId) &&
+						!this.config.getProvider(providerId),
+				)
+			: undefined;
+		this.ownerStore = owner ? (modelsStore as InMemoryCodingAgentModelsStore) : undefined;
+		this.auth = this.owned ?? this.models;
 		this.rebuildProviders();
 	}
 
 	static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {
-		const credentials = new RuntimeCredentials(options.credentials ?? DefaultAuthStorage.create(options.authPath));
-		const modelsPath =
-			options.modelsPath === null ? undefined : (options.modelsPath ?? join(getAgentDir(), "models.json"));
-		const config = await ModelConfig.load(modelsPath);
-		const modelsStore =
-			options.modelsStore ??
-			(modelsPath
-				? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
-				: new InMemoryCodingAgentModelsStore());
+		const { owner } = options;
+		const credentials = new RuntimeCredentials(
+			owner ? DefaultAuthStorage.inMemory() : (options.credentials ?? DefaultAuthStorage.create(options.authPath)),
+		);
+		const modelsPath = owner
+			? undefined
+			: options.modelsPath === null
+				? undefined
+				: (options.modelsPath ?? join(getAgentDir(), "models.json"));
+		// An owned runtime reads its configuration on the first refresh.
+		const config = owner ? ModelConfig.fromContent(undefined, "") : await ModelConfig.load(modelsPath);
+		const modelsStore = owner
+			? new InMemoryCodingAgentModelsStore()
+			: (options.modelsStore ??
+				(modelsPath
+					? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
+					: new InMemoryCodingAgentModelsStore()));
 		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
 		const providers = builtinProviderCatalog.builtinProviders().map((provider) => {
 			if (provider.id === "radius") return provider;
@@ -245,7 +280,9 @@ export class ModelRuntime implements Models {
 			modelsPath,
 			modelsStore,
 			providers,
-			process.env.PI_OFFLINE === undefined,
+			// The owner refreshes catalogs from the network and stores them for this runtime.
+			!owner && process.env.PI_OFFLINE === undefined,
+			owner,
 		);
 		runtime.configureRadiusProviders();
 		runtime.rebuildProviders();
@@ -340,19 +377,32 @@ export class ModelRuntime implements Models {
 		};
 	}
 
+	/** Providers with a stored credential, here or at the owner. */
+	private async storedProviderIds(signal: AbortSignal): Promise<string[]> {
+		const local = (await this.credentials.list({ signal })).map((entry) => entry.providerId);
+		return this.owned ? [...this.owned.stored(), ...local] : local;
+	}
+
+	private assertOwnCredentials(providerId: string): void {
+		if (this.owned) {
+			throw new ModelsError("auth", `Credentials for ${providerId} are managed on ${this.owned.owner.name}`);
+		}
+	}
+
 	private async runAvailabilityRefresh(seq: number, errorSeq: number, signal: AbortSignal): Promise<void> {
+		await this.owned?.refresh(signal);
 		const providers = this.models.getProviders();
-		const [available, checks, credentials] = await Promise.all([
-			this.models.getAvailable(undefined, { signal }),
+		const [available, checks, stored] = await Promise.all([
+			this.auth.getAvailable(undefined, { signal }),
 			Promise.all(
 				providers.map(
 					async (provider): Promise<[string, AuthCheck | undefined]> => [
 						provider.id,
-						await this.models.checkAuth(provider.id, { signal }),
+						await this.auth.checkAuth(provider.id, { signal }),
 					],
 				),
 			),
-			this.credentials.list({ signal }),
+			this.storedProviderIds(signal),
 		]);
 		if (seq !== this.availabilityRefreshSeq) return;
 		const auth = new Map(checks);
@@ -365,7 +415,7 @@ export class ModelRuntime implements Models {
 			all: [...this.models.getModels()],
 			available: [...available],
 			configuredProviders,
-			storedProviders: new Set(credentials.map((entry) => entry.providerId)),
+			storedProviders: new Set(stored),
 			auth,
 		};
 		if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
@@ -393,11 +443,13 @@ export class ModelRuntime implements Models {
 		this.providerAvailabilitySeq.set(providerId, providerSeq);
 		const errorSeq = ++this.availabilityErrorSeq;
 		try {
-			const [available, auth, credential] = await Promise.all([
-				this.models.getAvailable(providerId, { signal }),
-				this.models.checkAuth(providerId, { signal }),
-				this.credentials.read(providerId, { signal }),
+			await this.owned?.refresh(signal);
+			const [available, auth, stored] = await Promise.all([
+				this.auth.getAvailable(providerId, { signal }),
+				this.auth.checkAuth(providerId, { signal }),
+				this.storedProviderIds(signal),
 			]);
+			const credential = stored.includes(providerId);
 			signal.throwIfAborted();
 			if (this.providerAvailabilitySeq.get(providerId) !== providerSeq) return;
 			const configuredProviders = new Set(this.snapshot.configuredProviders);
@@ -476,22 +528,22 @@ export class ModelRuntime implements Models {
 		providerId?: string,
 		options?: AuthOperationOptions,
 	): Promise<readonly ModelTypeMap[TType][]> {
-		return this.models.getAvailableOfType(type, providerId, options);
+		return this.auth.getAvailableOfType(type, providerId, options);
 	}
 
 	getAllAvailable(providerId?: string, options?: AuthOperationOptions): Promise<readonly AnyModel[]> {
-		return this.models.getAllAvailable(providerId, options);
+		return this.auth.getAllAvailable(providerId, options);
 	}
 
 	async checkAuth(providerId: string, options?: AuthOperationOptions): Promise<AuthCheck | undefined> {
-		return this.models.checkAuth(providerId, options);
+		return this.auth.checkAuth(providerId, options);
 	}
 
 	async getAvailable(providerId?: string, options?: AuthOperationOptions): Promise<readonly Model<Api>[]> {
 		if (providerId) {
 			const errorSeq = ++this.availabilityErrorSeq;
 			try {
-				const available = await this.models.getAvailable(providerId, options);
+				const available = await this.auth.getAvailable(providerId, options);
 				if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
 				return available;
 			} catch (error) {
@@ -511,6 +563,7 @@ export class ModelRuntime implements Models {
 
 	getError(): string | undefined {
 		const errors: string[] = [];
+		if (this.ownerError) errors.push(this.ownerError);
 		const configError = this.config.getError();
 		if (configError) errors.push(configError);
 		for (const [providerId, error] of this.compositionErrors) {
@@ -534,6 +587,8 @@ export class ModelRuntime implements Models {
 
 	/** @internal Compatibility fallback for ModelRegistry when provider auth is unconfigured. */
 	getCompatibilityRequestConfig(model: Model<Api>): CompatibilityRequestConfig {
+		// The owner had no credential for it; its configured headers must not be resolved here.
+		if (this.owned?.owns(model.provider)) return { authHeader: true };
 		return resolveCompatibilityRequestConfig(
 			model,
 			this.config.getProvider(model.provider),
@@ -559,6 +614,27 @@ export class ModelRuntime implements Models {
 		providerOrModel: string | AnyModel,
 		overrides: ModelRuntimeAuthOverrides = {},
 	): Promise<AuthResult | undefined> {
+		const providerId = typeof providerOrModel === "string" ? providerOrModel : providerOrModel.provider;
+		if (this.owned?.owns(providerId)) {
+			// The owner resolves its credential and its configured headers; this runtime adds only
+			// the headers its own extensions register for the provider.
+			const resolution = await this.owned.owner.getAuth(providerOrModel, overrides);
+			const extension = this.extensionProviders.get(providerId);
+			if (!resolution || !extension) return resolution;
+			const extensionHeaders = resolveExtensionHeaders(
+				providerOrModel,
+				extension,
+				this.config.getProvider(providerId),
+				{
+					...(resolution.env ?? {}),
+					...(overrides.env ?? {}),
+				},
+			);
+			return {
+				...resolution,
+				auth: { ...resolution.auth, headers: mergeHeaders(resolution.auth.headers, extensionHeaders) },
+			};
+		}
 		if (typeof providerOrModel === "string") return this.models.getAuth(providerOrModel, overrides);
 		const resolution = await this.models.getAuth(providerOrModel, overrides);
 		if (!resolution) return undefined;
@@ -621,6 +697,7 @@ export class ModelRuntime implements Models {
 
 	setRuntimeApiKey(providerId: string, apiKey: string, options: AuthOperationOptions = {}): Promise<void> {
 		const signal = operationSignal(options.signal);
+		this.assertOwnCredentials(providerId);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.setRuntimeApiKey(providerId, apiKey);
 			await this.synchronizeCredentialState(
@@ -634,6 +711,7 @@ export class ModelRuntime implements Models {
 
 	removeRuntimeApiKey(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
 		const signal = operationSignal(options.signal);
+		this.assertOwnCredentials(providerId);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.removeRuntimeApiKey(providerId);
 			await this.synchronizeCredentialState(providerId, "removeRuntimeApiKey", undefined, signal);
@@ -653,6 +731,13 @@ export class ModelRuntime implements Models {
 	}
 
 	getProviderAuthStatus(providerId: string): AuthStatus {
+		if (this.owned?.owns(providerId)) {
+			const check = this.snapshot.auth.get(providerId);
+			if (!check) return { configured: false };
+			return this.snapshot.storedProviders.has(providerId)
+				? { configured: true, source: "stored" }
+				: { configured: true, source: "environment", label: check.source };
+		}
 		if (this.credentials.hasRuntimeApiKey(providerId)) return { configured: true, source: "runtime" };
 		// A stored credential owns the provider, so it is configured only when it resolves. A failing
 		// `!command` key leaves it unresolved, and requests fail with it (#12164). The source still says
@@ -872,6 +957,7 @@ export class ModelRuntime implements Models {
 		options?: LoginOptions,
 	): Promise<Credential> {
 		const signal = operationSignal(interaction.signal);
+		this.assertOwnCredentials(providerId);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			const credential = await this.models.login(providerId, type, { ...interaction, signal }, options);
 			await this.synchronizeCredentialState(providerId, "login", credential, signal);
@@ -881,6 +967,7 @@ export class ModelRuntime implements Models {
 
 	logout(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
 		const signal = operationSignal(options.signal);
+		this.assertOwnCredentials(providerId);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			await this.models.logout(providerId, { signal });
 			await this.synchronizeCredentialState(providerId, "logout", undefined, signal);
@@ -888,7 +975,9 @@ export class ModelRuntime implements Models {
 	}
 
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
-		this.config = await ModelConfig.load(this.modelsPath);
+		this.config = this.owned
+			? await this.readOwnerConfiguration(options.signal)
+			: await ModelConfig.load(this.modelsPath);
 		this.configureRadiusProviders();
 		if (options.providers) {
 			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);
@@ -898,7 +987,7 @@ export class ModelRuntime implements Models {
 		}
 		const refreshOptions = {
 			...options,
-			allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
+			allowNetwork: this.owned ? false : (options.allowNetwork ?? this.modelNetworkEnabled),
 		};
 		// Published pi-ai builds before ModelsStore returned void and accepted a provider ID.
 		// The fallback keeps source-mode CLI tests working without rebuilding workspace dependencies.
@@ -928,6 +1017,21 @@ export class ModelRuntime implements Models {
 			}
 		}
 		return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
+	}
+
+	/** An unreachable owner keeps the last configuration it gave and is reported by getError(). */
+	private async readOwnerConfiguration(signal: AbortSignal | undefined): Promise<ModelConfig> {
+		const owner = this.owned!.owner;
+		try {
+			const configuration = await owner.readConfiguration({ signal });
+			this.ownerError = undefined;
+			this.ownerStore!.replace(configuration.modelsStore);
+			return ModelConfig.fromContent(configuration.modelsJson, `models.json on ${owner.name}`);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			this.ownerError = `Could not read the model configuration from ${owner.name}: ${error instanceof Error ? error.message : String(error)}`;
+			return this.config;
+		}
 	}
 
 	registerNativeProvider(provider: Provider): void {

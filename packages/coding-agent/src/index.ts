@@ -240,6 +240,12 @@ export {
 	type ModelRuntimeAuthOverrides,
 } from "./core/model-runtime.ts";
 export type {
+	ModelRuntimeOwner,
+	ModelRuntimeOwnerAuthState,
+	ModelRuntimeOwnerConfiguration,
+} from "./core/model-runtime-owner.ts";
+export { FileModelsStore } from "./core/models-store.ts";
+export type {
 	PackageInstallFailure,
 	PackageManager,
 	PathMetadata,
