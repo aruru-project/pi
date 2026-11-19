@@ -1,5 +1,5 @@
 {
-	"version": "1.5.2-dock.1",
+	"version": "1.5.2-dock.2",
 	"node": ">=24.22.1",
 	"repository": "https://github.com/aruru-project/pi",
 	"runtimeRoots": ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-mcp"],
