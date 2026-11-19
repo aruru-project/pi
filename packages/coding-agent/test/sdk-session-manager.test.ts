@@ -1,10 +1,15 @@
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
+import type { ExtensionAPI } from "../src/core/extensions/types.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
+import { createHarness } from "./suite/harness.ts";
 
 describe("createAgentSession session manager defaults", () => {
 	let tempDir: string;
@@ -22,6 +27,113 @@ describe("createAgentSession session manager defaults", () => {
 	afterEach(() => {
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	// Dock card 271: exercise the real services -> SDK factory, including runtime replacement and reload.
+	it("forwards legacy extension policy through the runtime factory and leaves queued errors to the host", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "one", reasoning: true },
+				{ id: "two", reasoning: true },
+			],
+		});
+		let api: ExtensionAPI | undefined;
+		const starts: string[] = [];
+		const errors: string[] = [];
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ sessionManager, sessionStartEvent }) => {
+			const services = await createAgentSessionServices({
+				cwd,
+				agentDir,
+				settingsManager,
+				modelRuntime: harness.session.modelRuntime,
+				resourceLoaderOptions: {
+					noExtensions: true,
+					noSkills: true,
+					noPromptTemplates: true,
+					noThemes: true,
+					extensionFactories: [
+						(pi) => {
+							api = pi;
+							pi.on("session_start", async (event) => {
+								starts.push(event.reason);
+								await pi.setModel(harness.getModel("two")!);
+								pi.setThinkingLevel("max");
+							});
+						},
+					],
+				},
+			});
+			return {
+				...(await createAgentSessionFromServices({
+					services,
+					sessionManager,
+					sessionStartEvent,
+					model: harness.getModel(),
+					thinkingLevel: "low",
+					tools: [],
+					extensionModelMutationPolicy: "legacy-defaults",
+				})),
+				services,
+				diagnostics: services.diagnostics,
+			};
+		};
+		const runtime = await createAgentSessionRuntime(createRuntime, {
+			cwd,
+			agentDir,
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+		try {
+			const bind = async (session: typeof runtime.session) => {
+				await session.bindExtensions({
+					shutdownHandler: () => {},
+					onError: (error) => {
+						errors.push(error.error);
+					},
+				});
+			};
+			runtime.setRebindSession(bind);
+			await bind(runtime.session);
+			expect(settingsManager.getGlobalSettings()).toMatchObject({
+				defaultProvider: harness.getModel().provider,
+				defaultModel: "two",
+				defaultThinkingLevel: "high",
+			});
+			await settingsManager.flush();
+			const settingsPath = join(agentDir, "settings.json");
+			expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual(settingsManager.getGlobalSettings());
+			await runtime.session.reload();
+			expect(await api!.setModel(harness.getModel())).toBe(true);
+			api!.setThinkingLevel("low");
+			expect(settingsManager.getGlobalSettings()).toMatchObject({
+				defaultModel: "one",
+				defaultThinkingLevel: "low",
+			});
+			await runtime.newSession();
+			expect(starts).toEqual(["startup", "reload", "new"]);
+			expect(errors).toEqual([]);
+			expect(runtime.session.model?.id).toBe("two");
+			expect(runtime.session.thinkingLevel).toBe("high");
+			expect(settingsManager.getDefaultThinkingLevel()).toBe("high");
+			await settingsManager.flush();
+			expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual(settingsManager.getGlobalSettings());
+
+			// A queued disk error must remain available after another successful in-memory plugin mutation.
+			rmSync(settingsPath);
+			mkdirSync(settingsPath);
+			expect(api!.setThinkingLevel("low")).toBeUndefined();
+			await settingsManager.flush();
+			expect(await api!.setModel(harness.getModel())).toBe(true);
+			await settingsManager.flush();
+			expect(settingsManager.getGlobalSettings()).toMatchObject({
+				defaultModel: "one",
+				defaultThinkingLevel: "low",
+			});
+			expect(settingsManager.drainErrors().length).toBeGreaterThanOrEqual(2);
+		} finally {
+			await runtime.dispose();
+			harness.cleanup();
 		}
 	});
 

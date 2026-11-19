@@ -311,6 +311,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Extension setters default to session-only. Opt in to 0.84 default saving and thinking preservation. */
+	extensionModelMutationPolicy?: "session-only" | "legacy-defaults";
 }
 
 export interface ExtensionBindings {
@@ -350,6 +352,8 @@ export interface ModelSelectionOptions extends ModelMutationOptions {
 	/** Preserve the current thinking preference, using the saved/Pi default when leaving a non-thinking model. */
 	preserveThinkingLevel?: boolean;
 }
+
+type ModelMutationIntent = "session-only" | "sdk-persist" | "legacy-defaults";
 
 /** Result from cycleModel() */
 export interface ModelCycleResult {
@@ -498,6 +502,7 @@ export class AgentSession {
 	private _excludedTools?: (name: string) => boolean;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
+	private readonly _extensionModelMutationPolicy: NonNullable<AgentSessionConfig["extensionModelMutationPolicy"]>;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -550,6 +555,7 @@ export class AgentSession {
 		this._excludedTools = config.excludedToolNames ? createToolNameMatcher(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._extensionModelMutationPolicy = config.extensionModelMutationPolicy ?? "session-only";
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -2664,6 +2670,14 @@ export class AgentSession {
 	 * @throws Error if no auth is configured for the model
 	 */
 	async setModel(model: Model<any>, options: ModelSelectionOptions = {}): Promise<void> {
+		return this._setModel(model, options, options.persist ? "sdk-persist" : "session-only");
+	}
+
+	private async _setModel(
+		model: Model<string>,
+		options: Pick<ModelSelectionOptions, "preserveThinkingLevel">,
+		intent: ModelMutationIntent,
+	): Promise<void> {
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -2676,15 +2690,14 @@ export class AgentSession {
 			: this._getThinkingLevelForModelSwitch(model);
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
-		if (options.persist) {
+		if (intent !== "session-only") {
 			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
-			this._addPersistedDefaultToNonEmptyScope(model);
+			if (intent === "sdk-persist") this._addPersistedDefaultToNonEmptyScope(model);
 		}
 
-		// Apply thinking level for the new model.
-		// Unless explicitly preserved, per-model thinking overrides take priority over the global default.
-		// Model persistence does not implicitly rewrite the global thinking default.
-		this.setThinkingLevel(thinkingLevel);
+		// Clamp once, before observers see the new model. Only legacy extension mutations
+		// also save a changed effective thinking default; SDK model persistence does not.
+		this._setThinkingLevel(thinkingLevel, intent === "legacy-defaults" ? intent : "session-only");
 
 		await this._emitModelSelect(model, previousModel, "set");
 	}
@@ -2795,6 +2808,10 @@ export class AgentSession {
 	 * Persists the requested level to global defaults only when options.persist is true.
 	 */
 	setThinkingLevel(level: ThinkingLevel, options: ModelMutationOptions = {}): void {
+		this._setThinkingLevel(level, options.persist ? "sdk-persist" : "session-only");
+	}
+
+	private _setThinkingLevel(level: ThinkingLevel, intent: ModelMutationIntent): void {
 		const availableLevels = this.getAvailableThinkingLevels();
 		const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
 
@@ -2804,8 +2821,12 @@ export class AgentSession {
 
 		this.agent.state.thinkingLevel = effectiveLevel;
 
-		if (options.persist) {
+		if (intent === "sdk-persist") {
 			this.settingsManager.setDefaultThinkingLevel(level);
+		} else if (intent === "legacy-defaults" && isChanging && (this.supportsThinking() || effectiveLevel !== "off")) {
+			// Do not erase a reasoning preference when a plain model clamps it to off.
+			// Settings update and queue their write before any change observer runs.
+			this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
 		}
 
 		if (isChanging) {
@@ -3611,11 +3632,15 @@ export class AgentSession {
 				getCommands,
 				setModel: async (model) => {
 					if (!this._modelRuntime.hasConfiguredAuth(model.provider)) return false;
-					await this.setModel(model);
+					await this._setModel(
+						model,
+						{ preserveThinkingLevel: this._extensionModelMutationPolicy === "legacy-defaults" },
+						this._extensionModelMutationPolicy,
+					);
 					return true;
 				},
 				getThinkingLevel: () => this.thinkingLevel,
-				setThinkingLevel: (level) => this.setThinkingLevel(level),
+				setThinkingLevel: (level) => this._setThinkingLevel(level, this._extensionModelMutationPolicy),
 			},
 			{
 				getModel: () => this.model,
