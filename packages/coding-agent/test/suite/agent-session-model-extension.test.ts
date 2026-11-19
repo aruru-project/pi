@@ -53,6 +53,53 @@ describe("AgentSession model and extension characterization", () => {
 		expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
 	});
 
+	it("explicit model selection preserves thinking before plugins observe the final clamped state", async () => {
+		// Dock card 271: preserving a restored session's preference must not emit an intermediate default.
+		for (const scenario of [
+			{ reasoning: true, current: "high", saved: "low", expected: "high", changes: [] },
+			{ reasoning: false, current: "off", saved: "high", expected: "high", changes: ["high"] },
+			{ reasoning: false, current: "off", saved: undefined, expected: "medium", changes: ["medium"] },
+			{ reasoning: true, current: "max", saved: "low", expected: "high", changes: ["high"] },
+		] as const) {
+			const observed: Array<string | undefined> = [];
+			const harness = await createHarness({
+				models: [
+					{ id: "faux-1", reasoning: scenario.reasoning },
+					{ id: "faux-2", reasoning: true },
+				],
+				settings: {
+					defaultThinkingLevel: scenario.saved,
+					modelThinkingLevels: { "faux/faux-2": "minimal" },
+				},
+				extensionFactories: [
+					(pi) => {
+						pi.on("model_select", (_event, ctx) => {
+							observed.push(ctx.thinkingLevel);
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			if (scenario.current === "max") harness.getModel().thinkingLevelMap = { max: "max" };
+			harness.session.setThinkingLevel(scenario.current);
+			harness.events.length = 0;
+			const previousEntries = harness.sessionManager.getEntries().length;
+			await harness.session.setModel(harness.getModel("faux-2")!, { preserveThinkingLevel: true });
+			expect(harness.session.thinkingLevel).toBe(scenario.expected);
+			expect(observed).toEqual([scenario.expected]);
+			expect(harness.eventsOfType("thinking_level_changed").map((event) => event.level)).toEqual(scenario.changes);
+			expect(
+				harness.sessionManager
+					.getEntries()
+					.slice(previousEntries)
+					.filter((entry) => entry.type === "thinking_level_change")
+					.map((entry) => entry.thinkingLevel),
+			).toEqual(scenario.changes);
+			expect(harness.settingsManager.getDefaultThinkingLevel()).toBe(scenario.saved);
+			expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
+		}
+	});
+
 	it("only persists model and thinking defaults when requested", async () => {
 		const harness = await createHarness({
 			models: [
