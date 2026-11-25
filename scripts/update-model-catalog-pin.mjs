@@ -60,6 +60,16 @@ function modelApiGroups(root, bytes) {
 	return groups;
 }
 
+/** Read only the committed revision. An optional local snapshot must have the same hash. */
+export async function readPinnedModelCatalog(root, catalogPath) {
+	const pinPath = join(root, "nix/model-catalog.json");
+	const revision = JSON.parse(readFileSync(pinPath, "utf8")).revision;
+	if (typeof revision !== "string" || !REVISION_RE.test(revision)) throw new Error(`Invalid pin in ${pinPath}`);
+	const bytes = catalogPath ? readFileSync(catalogPath) : await fetchRevision(revision);
+	if (sha256(bytes) !== revision) throw new Error(`Model catalog does not match the pinned revision ${revision}`);
+	return { revision, bytes };
+}
+
 /** Hydrate the checkout's model data from catalog bytes, as the Nix build does. */
 export function hydrateModelCatalogBytes(root, bytes, options = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-model-catalog-pin-"));
